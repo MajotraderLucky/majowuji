@@ -1,20 +1,27 @@
 //! Telegram bot module - Remote training logging with hourly reminders
 
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use chrono::{Local, Utc};
 use teloxide::{
     prelude::*,
-    types::{InlineKeyboardButton, InlineKeyboardMarkup},
+    types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup},
     utils::command::BotCommands,
     dispatching::dialogue::{InMemStorage, Dialogue},
 };
 use tokio::sync::Mutex;
+use tracing::{info, error};
 
 use crate::db::{Database, Training};
 use crate::exercises::{get_base_exercises, find_exercise};
 
 type MyDialogue = Dialogue<State, InMemStorage<State>>;
 type HandlerResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type Subscribers = Arc<Mutex<HashSet<ChatId>>>;
+
+/// Reminder interval (1 hour = 3600 seconds)
+const REMINDER_INTERVAL_SECS: u64 = 3600;
 
 #[derive(Clone, Default)]
 pub enum State {
@@ -39,8 +46,10 @@ pub enum Command {
     Today,
     #[command(description = "Статистика")]
     Stats,
-    #[command(description = "Включить напоминания")]
+    #[command(description = "Включить напоминания раз в час")]
     Remind,
+    #[command(description = "Выключить напоминания")]
+    Stop,
 }
 
 /// Create inline keyboard with base exercises
@@ -60,10 +69,46 @@ fn make_exercises_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(buttons)
 }
 
+/// Background task that sends reminders every hour
+async fn reminder_task(bot: Bot, subscribers: Subscribers) {
+    info!("Reminder task started (interval: {} seconds)", REMINDER_INTERVAL_SECS);
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(REMINDER_INTERVAL_SECS)).await;
+
+        let subs = subscribers.lock().await;
+        if subs.is_empty() {
+            continue;
+        }
+
+        info!("Sending reminders to {} subscribers", subs.len());
+        let keyboard = make_exercises_keyboard();
+
+        for chat_id in subs.iter() {
+            let result = bot
+                .send_message(*chat_id, "⏰ Время размяться!\n\nВыбери упражнение:")
+                .reply_markup(keyboard.clone())
+                .await;
+
+            if let Err(e) = result {
+                error!("Failed to send reminder to {}: {}", chat_id, e);
+            }
+        }
+    }
+}
+
 /// Start the Telegram bot with reminders
 pub async fn run_bot(token: String, db_path: &str) -> anyhow::Result<()> {
     let bot = Bot::new(token);
     let db = Arc::new(Mutex::new(Database::open(db_path)?));
+    let subscribers: Subscribers = Arc::new(Mutex::new(HashSet::new()));
+
+    // Start reminder background task
+    let reminder_bot = bot.clone();
+    let reminder_subs = subscribers.clone();
+    tokio::spawn(async move {
+        reminder_task(reminder_bot, reminder_subs).await;
+    });
 
     let handler = dptree::entry()
         .branch(
@@ -81,7 +126,7 @@ pub async fn run_bot(token: String, db_path: &str) -> anyhow::Result<()> {
         );
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![InMemStorage::<State>::new(), db])
+        .dependencies(dptree::deps![InMemStorage::<State>::new(), db, subscribers])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
@@ -96,6 +141,7 @@ async fn handle_command(
     cmd: Command,
     _dialogue: MyDialogue,
     db: Arc<Mutex<Database>>,
+    subscribers: Subscribers,
 ) -> HandlerResult {
     match cmd {
         Command::Start => {
@@ -104,7 +150,8 @@ async fn handle_command(
                 /train - выбрать упражнение\n\
                 /today - сегодняшние тренировки\n\
                 /stats - статистика\n\
-                /remind - включить напоминания";
+                /remind - напоминания раз в час\n\
+                /stop - выключить напоминания";
             bot.send_message(msg.chat.id, text).await?;
         }
 
@@ -167,12 +214,36 @@ async fn handle_command(
         }
 
         Command::Remind => {
+            let mut subs = subscribers.lock().await;
+            subs.insert(msg.chat.id);
+            let count = subs.len();
+
             bot.send_message(
                 msg.chat.id,
-                "⏰ Напоминания пока в разработке.\n\n\
-                Пока можешь использовать системный таймер:\n\
-                watch -n 3600 'notify-send \"Время тренировки!\"'"
+                format!(
+                    "✅ Напоминания включены!\n\n\
+                    Буду напоминать раз в час.\n\
+                    /stop - выключить\n\n\
+                    Активных подписчиков: {}",
+                    count
+                )
             ).await?;
+
+            info!("User {} subscribed to reminders", msg.chat.id);
+        }
+
+        Command::Stop => {
+            let mut subs = subscribers.lock().await;
+            let was_subscribed = subs.remove(&msg.chat.id);
+
+            if was_subscribed {
+                bot.send_message(msg.chat.id, "🔕 Напоминания выключены.\n\n/remind - включить снова")
+                    .await?;
+                info!("User {} unsubscribed from reminders", msg.chat.id);
+            } else {
+                bot.send_message(msg.chat.id, "Напоминания и так выключены.\n\n/remind - включить")
+                    .await?;
+            }
         }
     }
 
@@ -183,7 +254,8 @@ async fn handle_callback(
     bot: Bot,
     q: CallbackQuery,
     dialogue: MyDialogue,
-    db: Arc<Mutex<Database>>,
+    _db: Arc<Mutex<Database>>,
+    _subscribers: Subscribers,
 ) -> HandlerResult {
     if let Some(data) = &q.data {
         if let Some(exercise_id) = data.strip_prefix("ex:") {
@@ -217,6 +289,7 @@ async fn handle_message(
     msg: Message,
     dialogue: MyDialogue,
     db: Arc<Mutex<Database>>,
+    _subscribers: Subscribers,
 ) -> HandlerResult {
     let state = dialogue.get().await?.unwrap_or_default();
 
