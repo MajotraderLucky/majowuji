@@ -87,6 +87,7 @@ async fn main() -> Result<()> {
                 exercise: exercise.clone(),
                 sets,
                 reps,
+                duration_secs: None,
                 notes,
             };
             let id = db.add_training(&training)?;

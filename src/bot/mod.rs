@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::{Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use teloxide::{
     prelude::*,
     types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup},
@@ -23,6 +23,17 @@ type Subscribers = Arc<Mutex<HashSet<ChatId>>>;
 /// Reminder interval (1 hour = 3600 seconds)
 const REMINDER_INTERVAL_SECS: u64 = 3600;
 
+/// Format duration in seconds to human-readable string
+fn format_duration(secs: i32) -> String {
+    if secs < 60 {
+        format!("{}с", secs)
+    } else if secs < 3600 {
+        format!("{}м {}с", secs / 60, secs % 60)
+    } else {
+        format!("{}ч {}м", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
 #[derive(Clone, Default)]
 pub enum State {
     #[default]
@@ -30,6 +41,7 @@ pub enum State {
     WaitingForReps {
         exercise_id: String,
         exercise_name: String,
+        start_time: DateTime<Utc>,
     },
 }
 
@@ -204,24 +216,29 @@ async fn handle_command(
                 .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
                 .collect();
 
+            let today_time: i32 = today_trainings.iter()
+                .filter_map(|t| t.duration_secs)
+                .sum();
+
             let mut text = format!(
                 "📈 Статистика\n\n\
                 Всего подходов: {}\n\
-                Сегодня: {}\n",
-                total, today_trainings.len()
+                Сегодня: {} ({})\n",
+                total, today_trainings.len(), format_duration(today_time)
             );
 
             // Group today's trainings by exercise
             if !today_trainings.is_empty() {
                 text.push_str("\n📊 Сегодня:\n");
-                let mut exercise_stats: std::collections::HashMap<&str, (usize, i32)> = std::collections::HashMap::new();
+                let mut exercise_stats: std::collections::HashMap<&str, (usize, i32, i32)> = std::collections::HashMap::new();
                 for t in &today_trainings {
-                    let entry = exercise_stats.entry(&t.exercise).or_insert((0, 0));
+                    let entry = exercise_stats.entry(&t.exercise).or_insert((0, 0, 0));
                     entry.0 += 1;  // sets count
                     entry.1 += t.reps;  // total reps
+                    entry.2 += t.duration_secs.unwrap_or(0);  // total time
                 }
-                for (exercise, (sets, reps)) in exercise_stats {
-                    text.push_str(&format!("• {} - {} подх., {} повт.\n", exercise, sets, reps));
+                for (exercise, (sets, reps, time)) in exercise_stats {
+                    text.push_str(&format!("• {} - {} подх., {} повт., {}\n", exercise, sets, reps, format_duration(time)));
                 }
             }
 
@@ -275,10 +292,11 @@ async fn handle_callback(
     if let Some(data) = &q.data {
         if let Some(exercise_id) = data.strip_prefix("ex:") {
             if let Some(exercise) = find_exercise(exercise_id) {
-                // Set state to waiting for reps
+                // Set state to waiting for reps with start time
                 dialogue.update(State::WaitingForReps {
                     exercise_id: exercise_id.to_string(),
                     exercise_name: exercise.name.to_string(),
+                    start_time: Utc::now(),
                 }).await?;
 
                 let text = format!(
@@ -309,36 +327,48 @@ async fn handle_message(
     let state = dialogue.get().await?.unwrap_or_default();
 
     match state {
-        State::WaitingForReps { exercise_id: _, exercise_name } => {
+        State::WaitingForReps { exercise_id: _, exercise_name, start_time } => {
             if let Some(text) = msg.text() {
                 // Parse just reps number - each entry is 1 set
                 if let Ok(reps) = text.trim().parse::<i32>() {
+                    // Calculate duration
+                    let now = Utc::now();
+                    let duration_secs = (now - start_time).num_seconds() as i32;
+
                     // Save to database - each entry is 1 set
                     let training = Training {
                         id: None,
-                        date: Utc::now(),
+                        date: now,
                         exercise: exercise_name.clone(),
                         sets: 1,
                         reps,
+                        duration_secs: Some(duration_secs),
                         notes: None,
                     };
 
-                    // Count today's sets for this exercise
-                    let today_sets = {
+                    // Count today's sets and total time for this exercise
+                    let (today_sets, total_time) = {
                         let db = db.lock().await;
                         db.add_training(&training)?;
 
                         let trainings = db.get_trainings()?;
                         let today = Local::now().date_naive();
-                        trainings.iter()
+                        let today_exercises: Vec<_> = trainings.iter()
                             .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
                             .filter(|t| t.exercise == exercise_name)
-                            .count()
+                            .collect();
+
+                        let sets = today_exercises.len();
+                        let time: i32 = today_exercises.iter()
+                            .filter_map(|t| t.duration_secs)
+                            .sum();
+                        (sets, time)
                     };
 
+                    let time_str = format_duration(total_time);
                     let response = format!(
-                        "✅ +1 подход!\n\n{} - {} повторов\nСегодня подходов: {}\n\n/train - ещё",
-                        exercise_name, reps, today_sets
+                        "✅ +1 подход! ({}с)\n\n{} - {} повторов\nСегодня: {} подх., {}\n\n/train - ещё",
+                        duration_secs, exercise_name, reps, today_sets, time_str
                     );
 
                     bot.send_message(msg.chat.id, response).await?;

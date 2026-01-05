@@ -13,6 +13,7 @@ pub struct Training {
     pub exercise: String,
     pub sets: i32,
     pub reps: i32,
+    pub duration_secs: Option<i32>,  // Time spent on exercise
     pub notes: Option<String>,
 }
 
@@ -39,22 +40,36 @@ impl Database {
                 exercise TEXT NOT NULL,
                 sets INTEGER NOT NULL,
                 reps INTEGER NOT NULL,
+                duration_secs INTEGER,
                 notes TEXT
             )",
             [],
         )?;
+
+        // Migration: add duration_secs column if missing
+        let has_duration: bool = self.conn
+            .prepare("SELECT duration_secs FROM trainings LIMIT 1")
+            .is_ok();
+        if !has_duration {
+            let _ = self.conn.execute(
+                "ALTER TABLE trainings ADD COLUMN duration_secs INTEGER",
+                [],
+            );
+        }
+
         Ok(())
     }
 
     /// Add new training record
     pub fn add_training(&self, training: &Training) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO trainings (date, exercise, sets, reps, notes) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO trainings (date, exercise, sets, reps, duration_secs, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 training.date.to_rfc3339(),
                 training.exercise,
                 training.sets,
                 training.reps,
+                training.duration_secs,
                 training.notes,
             ],
         )?;
@@ -64,7 +79,7 @@ impl Database {
     /// Get all trainings
     pub fn get_trainings(&self) -> Result<Vec<Training>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, exercise, sets, reps, notes FROM trainings ORDER BY date DESC"
+            "SELECT id, date, exercise, sets, reps, duration_secs, notes FROM trainings ORDER BY date DESC"
         )?;
 
         let trainings = stmt.query_map([], |row| {
@@ -77,7 +92,8 @@ impl Database {
                 exercise: row.get(2)?,
                 sets: row.get(3)?,
                 reps: row.get(4)?,
-                notes: row.get(5)?,
+                duration_secs: row.get(5)?,
+                notes: row.get(6)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
