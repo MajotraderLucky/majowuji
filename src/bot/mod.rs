@@ -111,6 +111,7 @@ pub async fn run_bot(token: String, db_path: &str) -> anyhow::Result<()> {
     });
 
     let handler = dptree::entry()
+        .enter_dialogue::<Update, InMemStorage<State>, State>()
         .branch(
             Update::filter_message()
                 .filter_command::<Command>()
