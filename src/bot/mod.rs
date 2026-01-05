@@ -549,11 +549,20 @@ async fn handle_callback(
                     user_id: user.id,
                 }).await?;
 
-                let text = format!(
-                    "{} {}\n\nПульс до упражнения?",
-                    exercise.category.emoji(),
-                    exercise.name
-                );
+                let text = if let Some(desc) = exercise.description {
+                    format!(
+                        "{} {}\n\n📖 {}\n\nПульс до упражнения?",
+                        exercise.category.emoji(),
+                        exercise.name,
+                        desc
+                    )
+                } else {
+                    format!(
+                        "{} {}\n\nПульс до упражнения?",
+                        exercise.category.emoji(),
+                        exercise.name
+                    )
+                };
 
                 if let Some(msg) = &q.message {
                     bot.edit_message_text(msg.chat().id, msg.id(), text)
