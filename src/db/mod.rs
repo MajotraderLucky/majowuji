@@ -14,6 +14,8 @@ pub struct Training {
     pub sets: i32,
     pub reps: i32,
     pub duration_secs: Option<i32>,  // Time spent on exercise
+    pub pulse_before: Option<i32>,   // Heart rate before exercise
+    pub pulse_after: Option<i32>,    // Heart rate after exercise
     pub notes: Option<String>,
 }
 
@@ -41,6 +43,8 @@ impl Database {
                 sets INTEGER NOT NULL,
                 reps INTEGER NOT NULL,
                 duration_secs INTEGER,
+                pulse_before INTEGER,
+                pulse_after INTEGER,
                 notes TEXT
             )",
             [],
@@ -57,19 +61,36 @@ impl Database {
             );
         }
 
+        // Migration: add pulse columns if missing
+        let has_pulse: bool = self.conn
+            .prepare("SELECT pulse_before FROM trainings LIMIT 1")
+            .is_ok();
+        if !has_pulse {
+            let _ = self.conn.execute(
+                "ALTER TABLE trainings ADD COLUMN pulse_before INTEGER",
+                [],
+            );
+            let _ = self.conn.execute(
+                "ALTER TABLE trainings ADD COLUMN pulse_after INTEGER",
+                [],
+            );
+        }
+
         Ok(())
     }
 
     /// Add new training record
     pub fn add_training(&self, training: &Training) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO trainings (date, exercise, sets, reps, duration_secs, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO trainings (date, exercise, sets, reps, duration_secs, pulse_before, pulse_after, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 training.date.to_rfc3339(),
                 training.exercise,
                 training.sets,
                 training.reps,
                 training.duration_secs,
+                training.pulse_before,
+                training.pulse_after,
                 training.notes,
             ],
         )?;
@@ -79,7 +100,7 @@ impl Database {
     /// Get all trainings
     pub fn get_trainings(&self) -> Result<Vec<Training>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, exercise, sets, reps, duration_secs, notes FROM trainings ORDER BY date DESC"
+            "SELECT id, date, exercise, sets, reps, duration_secs, pulse_before, pulse_after, notes FROM trainings ORDER BY date DESC"
         )?;
 
         let trainings = stmt.query_map([], |row| {
@@ -93,7 +114,9 @@ impl Database {
                 sets: row.get(3)?,
                 reps: row.get(4)?,
                 duration_secs: row.get(5)?,
-                notes: row.get(6)?,
+                pulse_before: row.get(6)?,
+                pulse_after: row.get(7)?,
+                notes: row.get(8)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

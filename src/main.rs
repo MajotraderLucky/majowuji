@@ -88,6 +88,8 @@ async fn main() -> Result<()> {
                 sets,
                 reps,
                 duration_secs: None,
+                pulse_before: None,
+                pulse_after: None,
                 notes,
             };
             let id = db.add_training(&training)?;

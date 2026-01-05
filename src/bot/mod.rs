@@ -38,10 +38,25 @@ fn format_duration(secs: i32) -> String {
 pub enum State {
     #[default]
     Start,
+    /// Waiting for pulse before exercise
+    WaitingForPulseBefore {
+        exercise_id: String,
+        exercise_name: String,
+    },
+    /// Waiting for reps count (timer running)
     WaitingForReps {
         exercise_id: String,
         exercise_name: String,
+        pulse_before: i32,
         start_time: DateTime<Utc>,
+    },
+    /// Waiting for pulse after exercise
+    WaitingForPulseAfter {
+        exercise_id: String,
+        exercise_name: String,
+        pulse_before: i32,
+        reps: i32,
+        duration_secs: i32,
     },
 }
 
@@ -292,15 +307,14 @@ async fn handle_callback(
     if let Some(data) = &q.data {
         if let Some(exercise_id) = data.strip_prefix("ex:") {
             if let Some(exercise) = find_exercise(exercise_id) {
-                // Set state to waiting for reps with start time
-                dialogue.update(State::WaitingForReps {
+                // Set state to waiting for pulse before exercise
+                dialogue.update(State::WaitingForPulseBefore {
                     exercise_id: exercise_id.to_string(),
                     exercise_name: exercise.name.to_string(),
-                    start_time: Utc::now(),
                 }).await?;
 
                 let text = format!(
-                    "{} {}\n\nСколько повторов?",
+                    "{} {}\n\nПульс до упражнения?",
                     exercise.category.emoji(),
                     exercise.name
                 );
@@ -327,22 +341,78 @@ async fn handle_message(
     let state = dialogue.get().await?.unwrap_or_default();
 
     match state {
-        State::WaitingForReps { exercise_id: _, exercise_name, start_time } => {
+        State::WaitingForPulseBefore { exercise_id, exercise_name } => {
             if let Some(text) = msg.text() {
-                // Parse just reps number - each entry is 1 set
+                if let Ok(pulse) = text.trim().parse::<i32>() {
+                    if pulse < 30 || pulse > 250 {
+                        bot.send_message(msg.chat.id, "Пульс должен быть от 30 до 250").await?;
+                        return Ok(());
+                    }
+
+                    // Move to waiting for reps, start timer
+                    dialogue.update(State::WaitingForReps {
+                        exercise_id,
+                        exercise_name: exercise_name.clone(),
+                        pulse_before: pulse,
+                        start_time: Utc::now(),
+                    }).await?;
+
+                    let response = format!(
+                        "Пульс: {} уд/мин\n\nВыполняй {}!\n\nСколько повторов?",
+                        pulse, exercise_name
+                    );
+                    bot.send_message(msg.chat.id, response).await?;
+                } else {
+                    bot.send_message(msg.chat.id, "Введи пульс (число)").await?;
+                }
+            }
+        }
+
+        State::WaitingForReps { exercise_id, exercise_name, pulse_before, start_time } => {
+            if let Some(text) = msg.text() {
                 if let Ok(reps) = text.trim().parse::<i32>() {
                     // Calculate duration
                     let now = Utc::now();
                     let duration_secs = (now - start_time).num_seconds() as i32;
 
-                    // Save to database - each entry is 1 set
+                    // Move to waiting for pulse after
+                    dialogue.update(State::WaitingForPulseAfter {
+                        exercise_id,
+                        exercise_name: exercise_name.clone(),
+                        pulse_before,
+                        reps,
+                        duration_secs,
+                    }).await?;
+
+                    let response = format!(
+                        "{} - {} повторов за {}с\n\nПульс после упражнения?",
+                        exercise_name, reps, duration_secs
+                    );
+                    bot.send_message(msg.chat.id, response).await?;
+                } else {
+                    bot.send_message(msg.chat.id, "Введи число повторов").await?;
+                }
+            }
+        }
+
+        State::WaitingForPulseAfter { exercise_id: _, exercise_name, pulse_before, reps, duration_secs } => {
+            if let Some(text) = msg.text() {
+                if let Ok(pulse_after) = text.trim().parse::<i32>() {
+                    if pulse_after < 30 || pulse_after > 250 {
+                        bot.send_message(msg.chat.id, "Пульс должен быть от 30 до 250").await?;
+                        return Ok(());
+                    }
+
+                    // Save to database
                     let training = Training {
                         id: None,
-                        date: now,
+                        date: Utc::now(),
                         exercise: exercise_name.clone(),
                         sets: 1,
                         reps,
                         duration_secs: Some(duration_secs),
+                        pulse_before: Some(pulse_before),
+                        pulse_after: Some(pulse_after),
                         notes: None,
                     };
 
@@ -365,19 +435,30 @@ async fn handle_message(
                         (sets, time)
                     };
 
+                    let pulse_diff = pulse_after - pulse_before;
+                    let pulse_indicator = if pulse_diff > 30 { "+++" } else if pulse_diff > 15 { "++" } else if pulse_diff > 0 { "+" } else { "-" };
+
                     let time_str = format_duration(total_time);
                     let response = format!(
-                        "✅ +1 подход! ({}с)\n\n{} - {} повторов\nСегодня: {} подх., {}\n\n/train - ещё",
-                        duration_secs, exercise_name, reps, today_sets, time_str
+                        "Записано!\n\n\
+                        {} - {} повторов\n\
+                        Время: {}с\n\
+                        Пульс: {} -> {} ({}{}) уд/мин\n\n\
+                        Сегодня: {} подх., {}\n\n\
+                        /train - ещё",
+                        exercise_name, reps, duration_secs,
+                        pulse_before, pulse_after, pulse_indicator, pulse_diff,
+                        today_sets, time_str
                     );
 
                     bot.send_message(msg.chat.id, response).await?;
                     dialogue.reset().await?;
                 } else {
-                    bot.send_message(msg.chat.id, "Введи число повторов").await?;
+                    bot.send_message(msg.chat.id, "Введи пульс (число)").await?;
                 }
             }
         }
+
         State::Start => {
             // Unknown message, suggest /train
             bot.send_message(msg.chat.id, "Жми /train чтобы начать тренировку")
