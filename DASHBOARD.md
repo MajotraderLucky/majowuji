@@ -11,7 +11,8 @@
 | Hourly Reminders    | [+] Working  | 100%     |
 | Duration Tracking   | [+] Working  | 100%     |
 | Pulse Tracking      | [+] Working  | 100%     |
-| ML Recommendations  | [+] Working  | 80%      |
+| ML Recommendations  | [+] Working  | 100%     |
+| Book Exercises      | [+] Working  | 100%     |
 | Muscle Balance      | [+] Working  | 100%     |
 | Multi-user Support  | [+] Working  | 100%     |
 | Charts/Graphs       | [ ] Planned  | 0%       |
@@ -77,22 +78,25 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 
 ## Current Sprint
 
-| Task                                 | Status      |
-|--------------------------------------|-------------|
-| Test logging functionality           | [+] Done    |
-| Add book to docs                     | [+] Done    |
-| Create dashboard                     | [+] Done    |
-| Deploy Telegram bot to archbook      | [+] Done    |
-| Add hourly reminders                 | [+] Done    |
-| Simplify input (just reps)           | [+] Done    |
-| Add duration tracking                | [+] Done    |
-| Add pulse tracking (HR before/after) | [+] Done    |
-| Add muscle group tracking (11)       | [+] Done    |
-| Add ML recommendations in /train     | [+] Done    |
-| Add /balance command                 | [+] Done    |
-| Multi-user support (10 users limit)  | [+] Done    |
-| Add TUI progress charts              | [ ] Next    |
-| ML load prediction based on pulse    | [ ] Backlog |
+| Task                                   | Status      |
+|----------------------------------------|-------------|
+| Test logging functionality             | [+] Done    |
+| Add book to docs                       | [+] Done    |
+| Create dashboard                       | [+] Done    |
+| Deploy Telegram bot to archbook        | [+] Done    |
+| Add hourly reminders                   | [+] Done    |
+| Simplify input (just reps)             | [+] Done    |
+| Add duration tracking                  | [+] Done    |
+| Add pulse tracking (HR before/after)   | [+] Done    |
+| Add muscle group tracking (11)         | [+] Done    |
+| Add ML recommendations in /train       | [+] Done    |
+| Add /balance command                   | [+] Done    |
+| Multi-user support (10 users limit)    | [+] Done    |
+| Add exercises for all 11 muscle groups | [+] Done    |
+| Bonus exercises with descriptions      | [+] Done    |
+| Book exercises selection button        | [+] Done    |
+| Add TUI progress charts                | [ ] Next    |
+| ML load prediction based on pulse      | [ ] Backlog |
 
 ## Quick Commands
 
@@ -145,17 +149,42 @@ Bot collects the following data for ML analysis:
 
 Each exercise is mapped to muscle groups for balance tracking:
 
-| Group      | Description      | Exercises                           |
-|------------|------------------|-------------------------------------|
-| chest      | Грудные          | pushups_fist, pushups_handles       |
-| shoulders  | Плечи            | pushups, plank, squats_strikes      |
-| triceps    | Трицепс          | pushups_fist, pushups_handles       |
-| core       | Кор              | jackknife, plank, squats, pushups   |
-| quads      | Квадрицепсы      | squats_strikes                      |
-| glutes     | Ягодицы          | squats_strikes                      |
-| full_body  | Всё тело         | taiji_shadow, form_24, silk_reeling |
+| Group      | Description      | Exercises                              |
+|------------|------------------|----------------------------------------|
+| chest      | Грудные          | pushups_fist, pushups_handles          |
+| shoulders  | Плечи            | pushups, plank, squats_strikes         |
+| triceps    | Трицепс          | pushups_fist, pushups_handles          |
+| back       | Спина            | let_me_in, shelf_pullup                |
+| biceps     | Бицепс           | let_me_in, shelf_pullup                |
+| core       | Кор              | jackknife, plank, squats, pushups      |
+| quads      | Квадрицепсы      | squats_strikes                         |
+| glutes     | Ягодицы          | squats_strikes, romanian_deadlift      |
+| hamstrings | Бицепс бедра     | romanian_deadlift                      |
+| calves     | Икры             | calf_raises                            |
+| full_body  | Всё тело         | taiji_shadow, form_24, silk_reeling    |
 
-*Back, biceps, hamstrings, calves - planned with new exercises*
+## Book Exercises System
+
+Exercises from "Сам себе тренер" (You Are Your Own Gym) are offered as bonus after completing the base program for the day.
+
+**Base Program (6 exercises):**
+- pushups_fist, pushups_handles, jackknife, plank_elbows, squats_strikes, taiji_shadow
+
+**Bonus Exercises (from book):**
+
+| Exercise           | Muscle Groups             | Description                                    |
+|--------------------|---------------------------|------------------------------------------------|
+| form_24            | full_body                 | Классическая форма тайцзицюань из 24 движений  |
+| silk_reeling       | full_body, core           | Упражнение на спиральную силу из стиля Чэнь    |
+| let_me_in          | back, biceps, shoulders   | Подтягивания к двери, держась за ручки         |
+| shelf_pullup       | biceps, back              | Тяга к полке/перилам ладонями вверх            |
+| calf_raises        | calves                    | Подъём на носки на краю ступеньки              |
+| romanian_deadlift  | hamstrings, glutes, core  | Румынская тяга на одной ноге                   |
+
+**How it works:**
+1. Bot recommends base exercises until all 6 are done today
+2. After base program complete, bot offers bonus with description
+3. User can skip bonus or choose from book exercises anytime via button
 
 ## Multi-user System
 
