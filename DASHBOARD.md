@@ -7,9 +7,10 @@
 | CLI               | [+] Ready    | 100%     |
 | SQLite Storage    | [+] Ready    | 100%     |
 | TUI Dashboard     | [~] Basic    | 40%      |
-| Telegram Bot      | [+] Deployed | 90%      |
+| Telegram Bot      | [+] Deployed | 100%     |
 | Hourly Reminders  | [+] Working  | 100%     |
 | Duration Tracking | [+] Working  | 100%     |
+| Pulse Tracking    | [+] Working  | 100%     |
 | ML Analytics      | [~] Basic    | 20%      |
 | Charts/Graphs     | [ ] Planned  | 0%       |
 
@@ -50,6 +51,7 @@ Book location: `docs/you-are-your-own-gym.txt`
 
 ### Phase 2: Analytics
 - [+] Duration tracking per exercise
+- [+] Pulse tracking (before/after)
 - [ ] Progress graphs (sparklines)
 - [ ] Weekly/monthly summaries
 - [ ] Exercise volume tracking
@@ -71,17 +73,18 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 
 ## Current Sprint
 
-| Task                               | Status      |
-|------------------------------------|-------------|
-| Test logging functionality         | [+] Done    |
-| Add book to docs                   | [+] Done    |
-| Create dashboard                   | [+] Done    |
-| Deploy Telegram bot to archbook    | [+] Done    |
-| Add hourly reminders               | [+] Done    |
-| Simplify input (just reps)         | [+] Done    |
-| Add duration tracking              | [+] Done    |
-| Add TUI progress charts            | [ ] Next    |
-| Implement exercise categories      | [ ] Backlog |
+| Task                                 | Status      |
+|--------------------------------------|-------------|
+| Test logging functionality           | [+] Done    |
+| Add book to docs                     | [+] Done    |
+| Create dashboard                     | [+] Done    |
+| Deploy Telegram bot to archbook      | [+] Done    |
+| Add hourly reminders                 | [+] Done    |
+| Simplify input (just reps)           | [+] Done    |
+| Add duration tracking                | [+] Done    |
+| Add pulse tracking (HR before/after) | [+] Done    |
+| Add TUI progress charts              | [ ] Next    |
+| Implement exercise categories        | [ ] Backlog |
 
 ## Quick Commands
 
@@ -105,3 +108,16 @@ majowuji tui
 - Database file: `majowuji.db` (auto-created)
 - Config: planned for `~/.config/majowuji/`
 - Telegram token: set via `TELOXIDE_TOKEN` env var
+
+## ML Data Collection
+
+Bot collects the following data for future ML analysis:
+
+| Field         | Description                      | ML Use Case                    |
+|---------------|----------------------------------|--------------------------------|
+| date          | Timestamp (MSK)                  | Time-of-day performance        |
+| duration_secs | Exercise duration                | Fatigue patterns               |
+| pulse_before  | Heart rate before exercise       | Readiness indicator            |
+| pulse_after   | Heart rate after exercise        | Recovery analysis              |
+| reps          | Repetitions count                | Volume tracking                |
+| exercise      | Exercise type                    | Category-based analysis        |
