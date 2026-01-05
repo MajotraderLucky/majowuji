@@ -303,12 +303,30 @@ async fn handle_command(
 
             if let Some(rec) = recommender.get_recommendation() {
                 // Show recommendation with option to choose other
-                let text = format!(
-                    "🎯 Рекомендую: {} {}\n\n{}\n\nВыбрать рекомендованное или другое?",
-                    rec.exercise.category.emoji(),
-                    rec.exercise.name,
-                    rec.reason
-                );
+                let text = if rec.is_bonus {
+                    // Bonus exercise - show with description
+                    let desc = rec.exercise.description.unwrap_or("");
+                    format!(
+                        "🎁 Бонус! База выполнена!\n\n{} {}\n\n{}\n\n📖 {}\n\nВыбрать или пропустить?",
+                        rec.exercise.category.emoji(),
+                        rec.exercise.name,
+                        rec.reason,
+                        desc
+                    )
+                } else {
+                    // Base exercise
+                    format!(
+                        "🎯 Рекомендую: {} {}\n\n{}\n\nВыбрать рекомендованное или другое?",
+                        rec.exercise.category.emoji(),
+                        rec.exercise.name,
+                        rec.reason
+                    )
+                };
+                let second_button = if rec.is_bonus {
+                    InlineKeyboardButton::callback("Пропустить", "skip_bonus")
+                } else {
+                    InlineKeyboardButton::callback("Выбрать другое", "show_all")
+                };
                 let keyboard = InlineKeyboardMarkup::new(vec![
                     vec![
                         InlineKeyboardButton::callback(
@@ -316,9 +334,7 @@ async fn handle_command(
                             format!("ex:{}", rec.exercise.id)
                         ),
                     ],
-                    vec![
-                        InlineKeyboardButton::callback("Выбрать другое", "show_all"),
-                    ],
+                    vec![second_button],
                 ]);
                 bot.send_message(msg.chat.id, text)
                     .reply_markup(keyboard)
@@ -470,8 +486,18 @@ async fn handle_callback(
     };
 
     if let Some(data) = &q.data {
+        // Handle "skip bonus" callback
+        if data == "skip_bonus" {
+            if let Some(msg) = &q.message {
+                bot.edit_message_text(
+                    msg.chat().id,
+                    msg.id(),
+                    "👍 База выполнена! Отдыхай.\n\nКогда будешь готов к бонусу - жми /train"
+                ).await?;
+            }
+        }
         // Handle "show all exercises" callback
-        if data == "show_all" {
+        else if data == "show_all" {
             let keyboard = make_exercises_keyboard();
             if let Some(msg) = &q.message {
                 bot.edit_message_text(msg.chat().id, msg.id(), "Выбери упражнение:")

@@ -1,8 +1,8 @@
 //! Exercise recommendation engine based on muscle group balance
 
-use chrono::Utc;
+use chrono::{Local, Utc};
 use crate::db::Training;
-use crate::exercises::{Exercise, get_base_exercises};
+use crate::exercises::{Exercise, get_base_exercises, get_all_exercises};
 use super::muscle_tracker::MuscleTracker;
 
 /// A recommendation with explanation
@@ -11,6 +11,7 @@ pub struct Recommendation {
     pub exercise: &'static Exercise,
     pub reason: String,
     pub confidence: f32,
+    pub is_bonus: bool,
 }
 
 /// Exercise recommendation engine
@@ -26,76 +27,134 @@ impl Recommender {
         Self { tracker, trainings }
     }
 
+    /// Check if all base exercises were done today
+    fn base_program_done_today(&self) -> bool {
+        let today = Local::now().date_naive();
+        let base_exercises = get_base_exercises();
+
+        for exercise in base_exercises {
+            let done_today = self.trainings.iter().any(|t| {
+                t.exercise == exercise.name &&
+                t.date.with_timezone(&Local).date_naive() == today
+            });
+            if !done_today {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Get best exercise recommendation
     pub fn get_recommendation(&self) -> Option<Recommendation> {
-        let exercises = get_base_exercises();
+        // Check if base program is done today
+        if self.base_program_done_today() {
+            return self.get_bonus_recommendation();
+        }
 
-        // Strategy 1: Find exercises targeting underworked muscle groups
+        // Recommend from base exercises
+        self.get_base_recommendation()
+    }
+
+    /// Recommend base exercise
+    fn get_base_recommendation(&self) -> Option<Recommendation> {
+        let exercises = get_base_exercises();
+        let today = Local::now().date_naive();
+
+        // Find base exercises not done today, prioritize by muscle balance
         let underworked = self.tracker.get_underworked_groups(5);
         let mut candidates: Vec<(&'static Exercise, f32, String)> = Vec::new();
 
         for exercise in exercises {
-            // Check rest time (skip if done recently)
-            let hours_since = self.hours_since_exercise(exercise.name);
-            if hours_since < 1.0 {
-                continue; // Need at least 1 hour rest
+            // Skip if done today
+            let done_today = self.trainings.iter().any(|t| {
+                t.exercise == exercise.name &&
+                t.date.with_timezone(&Local).date_naive() == today
+            });
+            if done_today {
+                continue;
             }
 
-            // Check if exercise targets any underworked muscle
+            // Check rest time
+            let hours_since = self.hours_since_exercise(exercise.name);
+            if hours_since < 1.0 {
+                continue;
+            }
+
+            // Score by underworked muscles
+            let targets_underworked: Vec<_> = exercise.muscle_groups
+                .iter()
+                .filter(|mg| underworked.contains(mg))
+                .collect();
+
+            let score = if !targets_underworked.is_empty() {
+                targets_underworked.len() as f32 / exercise.muscle_groups.len() as f32 + 0.5
+            } else {
+                0.3
+            };
+
+            let reason = if !targets_underworked.is_empty() {
+                let names: Vec<_> = targets_underworked.iter().map(|mg| mg.name_ru()).collect();
+                format!("{} мало работали", names.join(", "))
+            } else if hours_since == f32::MAX {
+                "ещё не делали".to_string()
+            } else {
+                format!("отдохнули {:.0}ч", hours_since)
+            };
+
+            candidates.push((exercise, score, reason));
+        }
+
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        candidates.into_iter().next().map(|(exercise, score, reason)| {
+            Recommendation {
+                exercise,
+                reason,
+                confidence: score,
+                is_bonus: false,
+            }
+        })
+    }
+
+    /// Recommend bonus exercise from the book
+    fn get_bonus_recommendation(&self) -> Option<Recommendation> {
+        let all_exercises = get_all_exercises();
+        let underworked = self.tracker.get_underworked_groups(5);
+
+        // Filter to non-base exercises that target underworked muscles
+        let mut candidates: Vec<(&'static Exercise, f32, String)> = Vec::new();
+
+        for exercise in all_exercises {
+            if exercise.is_base {
+                continue;
+            }
+
+            let hours_since = self.hours_since_exercise(exercise.name);
+            if hours_since < 1.0 {
+                continue;
+            }
+
             let targets_underworked: Vec<_> = exercise.muscle_groups
                 .iter()
                 .filter(|mg| underworked.contains(mg))
                 .collect();
 
             if !targets_underworked.is_empty() {
-                // Calculate score based on how many underworked muscles it targets
-                let score = targets_underworked.len() as f32 / exercise.muscle_groups.len() as f32;
-                // Bonus for longer rest
-                let rest_bonus = (hours_since / 24.0).min(0.5);
-                let final_score = score + rest_bonus;
-
-                // Build reason string
-                let muscle_names: Vec<_> = targets_underworked
-                    .iter()
-                    .map(|mg| mg.name_ru())
-                    .collect();
-                let reason = format!("{} мало работали сегодня", muscle_names.join(", "));
-
-                candidates.push((exercise, final_score, reason));
+                let score = targets_underworked.len() as f32;
+                let names: Vec<_> = targets_underworked.iter().map(|mg| mg.name_ru()).collect();
+                let reason = format!("🎁 Бонус! {} нужна нагрузка", names.join(", "));
+                candidates.push((exercise, score, reason));
             }
         }
 
-        // Sort by score (highest first)
         candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // If we have candidates targeting underworked muscles, use them
-        if let Some((exercise, score, reason)) = candidates.into_iter().next() {
-            return Some(Recommendation {
-                exercise,
-                reason,
-                confidence: score,
-            });
-        }
-
-        // Strategy 2: Fallback - recommend exercise with longest rest time
-        let mut fallback: Vec<_> = exercises
-            .iter()
-            .map(|ex| (ex, self.hours_since_exercise(ex.name)))
-            .filter(|(_, hours)| *hours >= 1.0) // At least 1 hour rest
-            .collect();
-
-        fallback.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        fallback.into_iter().next().map(|(exercise, hours)| {
-            let reason = if hours == f32::MAX {
-                "ещё не делали".to_string()
-            } else {
-                format!("отдохнули {:.0}ч", hours)
-            };
+        candidates.into_iter().next().map(|(exercise, score, reason)| {
             Recommendation {
                 exercise,
                 reason,
-                confidence: 0.5,
+                confidence: score,
+                is_bonus: true,
             }
         })
     }

@@ -60,6 +60,7 @@ pub struct Exercise {
     pub category: Category,
     pub muscle_groups: &'static [MuscleGroup],
     pub is_base: bool,
+    pub description: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -93,6 +94,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Push,
         muscle_groups: &[MuscleGroup::Chest, MuscleGroup::Triceps, MuscleGroup::Shoulders, MuscleGroup::Core],
         is_base: true,
+        description: None,
     },
     Exercise {
         id: "pushups_handles",
@@ -100,13 +102,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Push,
         muscle_groups: &[MuscleGroup::Chest, MuscleGroup::Triceps, MuscleGroup::Shoulders, MuscleGroup::Core],
         is_base: true,
-    },
-    Exercise {
-        id: "let_me_in",
-        name: "впусти меня (тяга на двери)",
-        category: Category::Pull,
-        muscle_groups: &[MuscleGroup::Back, MuscleGroup::Biceps, MuscleGroup::Shoulders],
-        is_base: true,
+        description: None,
     },
     Exercise {
         id: "jackknife",
@@ -114,6 +110,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Core,
         muscle_groups: &[MuscleGroup::Core],
         is_base: true,
+        description: None,
     },
     Exercise {
         id: "plank_elbows",
@@ -121,6 +118,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Core,
         muscle_groups: &[MuscleGroup::Core, MuscleGroup::Shoulders],
         is_base: true,
+        description: None,
     },
     Exercise {
         id: "squats_strikes",
@@ -128,20 +126,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Legs,
         muscle_groups: &[MuscleGroup::Quads, MuscleGroup::Glutes, MuscleGroup::Core, MuscleGroup::Shoulders],
         is_base: true,
-    },
-    Exercise {
-        id: "calf_raises",
-        name: "подъём на носки",
-        category: Category::Legs,
-        muscle_groups: &[MuscleGroup::Calves],
-        is_base: true,
-    },
-    Exercise {
-        id: "romanian_deadlift",
-        name: "румынская тяга на одной ноге",
-        category: Category::Legs,
-        muscle_groups: &[MuscleGroup::Hamstrings, MuscleGroup::Glutes, MuscleGroup::Core],
-        is_base: true,
+        description: None,
     },
     Exercise {
         id: "taiji_shadow",
@@ -149,17 +134,20 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Taiji,
         muscle_groups: &[MuscleGroup::FullBody],
         is_base: true,
+        description: None,
     },
 ];
 
-/// Дополнительные упражнения (из книги)
+/// Дополнительные упражнения (из книги "Сам себе тренер")
 pub const EXTRA_EXERCISES: &[Exercise] = &[
+    // Тайцзи
     Exercise {
         id: "form_24",
         name: "форма 24",
         category: Category::Taiji,
         muscle_groups: &[MuscleGroup::FullBody],
         is_base: false,
+        description: Some("Классическая форма тайцзицюань из 24 движений"),
     },
     Exercise {
         id: "silk_reeling",
@@ -167,6 +155,41 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         category: Category::Taiji,
         muscle_groups: &[MuscleGroup::FullBody, MuscleGroup::Core],
         is_base: false,
+        description: Some("Упражнение на спиральную силу из стиля Чэнь"),
+    },
+    // Тяговые (спина, бицепс)
+    Exercise {
+        id: "let_me_in",
+        name: "впусти меня",
+        category: Category::Pull,
+        muscle_groups: &[MuscleGroup::Back, MuscleGroup::Biceps, MuscleGroup::Shoulders],
+        is_base: false,
+        description: Some("Стоя лицом к двери, держась за ручки с двух сторон. Ноги по бокам двери. Подтягивайся к двери, сгибая локти"),
+    },
+    Exercise {
+        id: "shelf_pullup",
+        name: "подтягивание у полки",
+        category: Category::Pull,
+        muscle_groups: &[MuscleGroup::Biceps, MuscleGroup::Back],
+        is_base: false,
+        description: Some("Встань у полки/перил на уровне пояса. Руки ладонями вверх под выступ. Тяни вверх, наклоняясь вперёд"),
+    },
+    // Ноги
+    Exercise {
+        id: "calf_raises",
+        name: "подъём на носки",
+        category: Category::Legs,
+        muscle_groups: &[MuscleGroup::Calves],
+        is_base: false,
+        description: Some("Встань на край ступеньки носками. Поднимайся на носки и опускайся ниже уровня ступени"),
+    },
+    Exercise {
+        id: "romanian_deadlift",
+        name: "румынская тяга на одной ноге",
+        category: Category::Legs,
+        muscle_groups: &[MuscleGroup::Hamstrings, MuscleGroup::Glutes, MuscleGroup::Core],
+        is_base: false,
+        description: Some("Стоя на одной ноге, наклоняйся вперёд, отводя другую ногу назад. Спина прямая"),
     },
 ];
 
