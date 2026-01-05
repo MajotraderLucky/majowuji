@@ -2,17 +2,19 @@
 
 ## Project Status
 
-| Component         | Status       | Progress |
-|-------------------|--------------|----------|
-| CLI               | [+] Ready    | 100%     |
-| SQLite Storage    | [+] Ready    | 100%     |
-| TUI Dashboard     | [~] Basic    | 40%      |
-| Telegram Bot      | [+] Deployed | 100%     |
-| Hourly Reminders  | [+] Working  | 100%     |
-| Duration Tracking | [+] Working  | 100%     |
-| Pulse Tracking    | [+] Working  | 100%     |
-| ML Analytics      | [~] Basic    | 20%      |
-| Charts/Graphs     | [ ] Planned  | 0%       |
+| Component           | Status       | Progress |
+|---------------------|--------------|----------|
+| CLI                 | [+] Ready    | 100%     |
+| SQLite Storage      | [+] Ready    | 100%     |
+| TUI Dashboard       | [~] Basic    | 40%      |
+| Telegram Bot        | [+] Deployed | 100%     |
+| Hourly Reminders    | [+] Working  | 100%     |
+| Duration Tracking   | [+] Working  | 100%     |
+| Pulse Tracking      | [+] Working  | 100%     |
+| ML Recommendations  | [+] Working  | 80%      |
+| Muscle Balance      | [+] Working  | 100%     |
+| Multi-user Support  | [+] Working  | 100%     |
+| Charts/Graphs       | [ ] Planned  | 0%       |
 
 ## Training Program
 
@@ -42,7 +44,7 @@ Book location: `docs/you-are-your-own-gym.txt`
 
 ## Development Roadmap
 
-### Phase 1: Foundation [CURRENT]
+### Phase 1: Foundation [DONE]
 - [+] Project scaffolding
 - [+] CLI with basic commands
 - [+] SQLite database
@@ -57,10 +59,12 @@ Book location: `docs/you-are-your-own-gym.txt`
 - [ ] Exercise volume tracking
 - [ ] Personal records (PR) tracking
 
-### Phase 3: Intelligence
+### Phase 3: Intelligence [CURRENT]
+- [+] Muscle group tracking (11 groups)
+- [+] Exercise recommendations by balance
+- [+] /balance command (weekly report)
 - [ ] ML-based load prediction
-- [ ] Recovery recommendations
-- [ ] Optimal training suggestions
+- [ ] Recovery recommendations based on pulse
 - [ ] Pattern recognition
 
 ### Phase 4: Integration
@@ -83,11 +87,16 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 | Simplify input (just reps)           | [+] Done    |
 | Add duration tracking                | [+] Done    |
 | Add pulse tracking (HR before/after) | [+] Done    |
+| Add muscle group tracking (11)       | [+] Done    |
+| Add ML recommendations in /train     | [+] Done    |
+| Add /balance command                 | [+] Done    |
+| Multi-user support (10 users limit)  | [+] Done    |
 | Add TUI progress charts              | [ ] Next    |
-| Implement exercise categories        | [ ] Backlog |
+| ML load prediction based on pulse    | [ ] Backlog |
 
 ## Quick Commands
 
+### CLI
 ```bash
 # Log training
 majowuji log jab -s 3 -r 50 -n "Notes here"
@@ -103,6 +112,16 @@ majowuji stats jab
 majowuji tui
 ```
 
+### Telegram Bot
+```
+/train   - выбрать упражнение (с рекомендацией)
+/today   - сегодняшние тренировки
+/stats   - статистика
+/balance - баланс нагрузки по группам мышц
+/remind  - напоминания раз в час
+/stop    - выключить напоминания
+```
+
 ## Notes
 
 - Database file: `majowuji.db` (auto-created)
@@ -111,7 +130,7 @@ majowuji tui
 
 ## ML Data Collection
 
-Bot collects the following data for future ML analysis:
+Bot collects the following data for ML analysis:
 
 | Field         | Description                      | ML Use Case                    |
 |---------------|----------------------------------|--------------------------------|
@@ -121,3 +140,33 @@ Bot collects the following data for future ML analysis:
 | pulse_after   | Heart rate after exercise        | Recovery analysis              |
 | reps          | Repetitions count                | Volume tracking                |
 | exercise      | Exercise type                    | Category-based analysis        |
+
+## Muscle Groups (11)
+
+Each exercise is mapped to muscle groups for balance tracking:
+
+| Group      | Description      | Exercises                           |
+|------------|------------------|-------------------------------------|
+| chest      | Грудные          | pushups_fist, pushups_handles       |
+| shoulders  | Плечи            | pushups, plank, squats_strikes      |
+| triceps    | Трицепс          | pushups_fist, pushups_handles       |
+| core       | Кор              | jackknife, plank, squats, pushups   |
+| quads      | Квадрицепсы      | squats_strikes                      |
+| glutes     | Ягодицы          | squats_strikes                      |
+| full_body  | Всё тело         | taiji_shadow, form_24, silk_reeling |
+
+*Back, biceps, hamstrings, calves - planned with new exercises*
+
+## Multi-user System
+
+| Feature             | Description                                        |
+|---------------------|----------------------------------------------------|
+| User limit          | 10 free users (configurable via MAX_USERS env)     |
+| Owner               | First user automatically becomes owner             |
+| Data separation     | Each user sees only their own trainings/stats      |
+| Access control      | New users after limit get prompt to message owner  |
+| Message forwarding  | Messages from blocked users forwarded to owner     |
+
+**Environment Variables:**
+- `MAX_USERS` - Maximum allowed users (default: 10)
+- `TELOXIDE_TOKEN` - Telegram bot token

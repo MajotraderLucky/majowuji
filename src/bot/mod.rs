@@ -13,8 +13,25 @@ use teloxide::{
 use tokio::sync::Mutex;
 use tracing::{info, error};
 
-use crate::db::{Database, Training};
+use crate::db::{Database, Training, User};
 use crate::exercises::{get_base_exercises, find_exercise};
+use crate::ml::Recommender;
+
+/// Bot configuration
+pub struct BotConfig {
+    pub max_users: usize,
+}
+
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self {
+            max_users: std::env::var("MAX_USERS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10),
+        }
+    }
+}
 
 type MyDialogue = Dialogue<State, InMemStorage<State>>;
 type HandlerResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -38,10 +55,13 @@ fn format_duration(secs: i32) -> String {
 pub enum State {
     #[default]
     Start,
+    /// Waiting for message to forward to owner (limit reached)
+    WaitingForOwnerMessage,
     /// Waiting for pulse before exercise
     WaitingForPulseBefore {
         exercise_id: String,
         exercise_name: String,
+        user_id: i64,
     },
     /// Waiting for reps count (timer running)
     WaitingForReps {
@@ -49,6 +69,7 @@ pub enum State {
         exercise_name: String,
         pulse_before: i32,
         start_time: DateTime<Utc>,
+        user_id: i64,
     },
     /// Waiting for pulse after exercise
     WaitingForPulseAfter {
@@ -57,6 +78,7 @@ pub enum State {
         pulse_before: i32,
         reps: i32,
         duration_secs: i32,
+        user_id: i64,
     },
 }
 
@@ -73,6 +95,8 @@ pub enum Command {
     Today,
     #[command(description = "Статистика")]
     Stats,
+    #[command(description = "Баланс нагрузки по группам мышц")]
+    Balance,
     #[command(description = "Включить напоминания раз в час")]
     Remind,
     #[command(description = "Выключить напоминания")]
@@ -124,11 +148,54 @@ async fn reminder_task(bot: Bot, subscribers: Subscribers) {
     }
 }
 
+/// User access check result
+enum AccessResult {
+    Allowed(User),
+    NewUser(User),
+    LimitReached,
+}
+
+/// Check user access and register if allowed
+fn check_user_access(
+    db: &Database,
+    chat_id: i64,
+    username: Option<&str>,
+    first_name: Option<&str>,
+    config: &BotConfig,
+) -> anyhow::Result<AccessResult> {
+    // Check if user already exists
+    if let Some(user) = db.get_user_by_chat_id(chat_id)? {
+        return Ok(AccessResult::Allowed(user));
+    }
+
+    // Check user limit
+    let user_count = db.count_users()?;
+    if user_count >= config.max_users {
+        return Ok(AccessResult::LimitReached);
+    }
+
+    // Register new user (first user becomes owner)
+    let user = db.get_or_create_user(chat_id, username, first_name)?;
+
+    // Migrate existing trainings to owner if this is the first user
+    if user.is_owner {
+        let migrated = db.migrate_trainings_to_owner()?;
+        if migrated > 0 {
+            info!("Migrated {} trainings to owner", migrated);
+        }
+    }
+
+    Ok(AccessResult::NewUser(user))
+}
+
 /// Start the Telegram bot with reminders
 pub async fn run_bot(token: String, db_path: &str) -> anyhow::Result<()> {
     let bot = Bot::new(token);
     let db = Arc::new(Mutex::new(Database::open(db_path)?));
+    let config = Arc::new(BotConfig::default());
     let subscribers: Subscribers = Arc::new(Mutex::new(HashSet::new()));
+
+    info!("Bot started with max_users={}", config.max_users);
 
     // Start reminder background task
     let reminder_bot = bot.clone();
@@ -154,7 +221,7 @@ pub async fn run_bot(token: String, db_path: &str) -> anyhow::Result<()> {
         );
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![InMemStorage::<State>::new(), db, subscribers])
+        .dependencies(dptree::deps![InMemStorage::<State>::new(), db, config, subscribers])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
@@ -167,10 +234,47 @@ async fn handle_command(
     bot: Bot,
     msg: Message,
     cmd: Command,
-    _dialogue: MyDialogue,
+    dialogue: MyDialogue,
     db: Arc<Mutex<Database>>,
+    config: Arc<BotConfig>,
     subscribers: Subscribers,
 ) -> HandlerResult {
+    let chat_id = msg.chat.id.0;
+    let username = msg.from.as_ref().and_then(|u| u.username.as_deref());
+    let first_name = msg.from.as_ref().map(|u| u.first_name.as_str());
+
+    // Check user access
+    let user = {
+        let db = db.lock().await;
+        match check_user_access(&db, chat_id, username, first_name, &config)? {
+            AccessResult::Allowed(user) => user,
+            AccessResult::NewUser(user) => {
+                let welcome = if user.is_owner {
+                    "🥋 无极 majowuji\n\n\
+                    Ты владелец этого бота!\n\n\
+                    /train - выбрать упражнение\n\
+                    /today - сегодняшние тренировки\n\
+                    /stats - статистика\n\
+                    /balance - баланс мышц\n\
+                    /remind - напоминания раз в час"
+                } else {
+                    "🥋 Добро пожаловать в majowuji!\n\n\
+                    /train - начать тренировку"
+                };
+                bot.send_message(msg.chat.id, welcome).await?;
+                info!("New user registered: {} (owner={})", chat_id, user.is_owner);
+                return Ok(());
+            }
+            AccessResult::LimitReached => {
+                let text = "Бот достиг лимита пользователей (10).\n\n\
+                    Напиши сообщение ниже - я передам его владельцу для обсуждения доступа.";
+                bot.send_message(msg.chat.id, text).await?;
+                dialogue.update(State::WaitingForOwnerMessage).await?;
+                return Ok(());
+            }
+        }
+    };
+
     match cmd {
         Command::Start => {
             let text = "🥋 无极 majowuji\n\n\
@@ -178,6 +282,7 @@ async fn handle_command(
                 /train - выбрать упражнение\n\
                 /today - сегодняшние тренировки\n\
                 /stats - статистика\n\
+                /balance - баланс мышц\n\
                 /remind - напоминания раз в час\n\
                 /stop - выключить напоминания";
             bot.send_message(msg.chat.id, text).await?;
@@ -189,15 +294,47 @@ async fn handle_command(
         }
 
         Command::Train => {
-            let keyboard = make_exercises_keyboard();
-            bot.send_message(msg.chat.id, "Выбери упражнение:")
-                .reply_markup(keyboard)
-                .await?;
+            // Get recommendation based on muscle balance for this user
+            let trainings = {
+                let db = db.lock().await;
+                db.get_trainings_for_user(user.id)?
+            };
+            let recommender = Recommender::new(trainings);
+
+            if let Some(rec) = recommender.get_recommendation() {
+                // Show recommendation with option to choose other
+                let text = format!(
+                    "🎯 Рекомендую: {} {}\n\n{}\n\nВыбрать рекомендованное или другое?",
+                    rec.exercise.category.emoji(),
+                    rec.exercise.name,
+                    rec.reason
+                );
+                let keyboard = InlineKeyboardMarkup::new(vec![
+                    vec![
+                        InlineKeyboardButton::callback(
+                            format!("✓ {}", rec.exercise.name),
+                            format!("ex:{}", rec.exercise.id)
+                        ),
+                    ],
+                    vec![
+                        InlineKeyboardButton::callback("Выбрать другое", "show_all"),
+                    ],
+                ]);
+                bot.send_message(msg.chat.id, text)
+                    .reply_markup(keyboard)
+                    .await?;
+            } else {
+                // No recommendation, show all exercises
+                let keyboard = make_exercises_keyboard();
+                bot.send_message(msg.chat.id, "Выбери упражнение:")
+                    .reply_markup(keyboard)
+                    .await?;
+            }
         }
 
         Command::Today => {
             let db = db.lock().await;
-            let trainings = db.get_trainings()?;
+            let trainings = db.get_trainings_for_user(user.id)?;
             let today = Local::now().date_naive();
 
             let today_trainings: Vec<_> = trainings
@@ -222,7 +359,7 @@ async fn handle_command(
 
         Command::Stats => {
             let db = db.lock().await;
-            let trainings = db.get_trainings()?;
+            let trainings = db.get_trainings_for_user(user.id)?;
 
             let total = trainings.len();
             let today = Local::now().date_naive();
@@ -292,6 +429,17 @@ async fn handle_command(
                     .await?;
             }
         }
+
+        Command::Balance => {
+            let trainings = {
+                let db = db.lock().await;
+                db.get_trainings_for_user(user.id)?
+            };
+            let recommender = Recommender::new(trainings);
+            let report = recommender.get_balance_report();
+
+            bot.send_message(msg.chat.id, format!("🏋️ {}", report)).await?;
+        }
     }
 
     Ok(())
@@ -301,16 +449,44 @@ async fn handle_callback(
     bot: Bot,
     q: CallbackQuery,
     dialogue: MyDialogue,
-    _db: Arc<Mutex<Database>>,
+    db: Arc<Mutex<Database>>,
+    config: Arc<BotConfig>,
     _subscribers: Subscribers,
 ) -> HandlerResult {
+    // Get user_id for this callback
+    let chat_id = q.message.as_ref().map(|m| m.chat().id.0).unwrap_or(0);
+    let username = q.from.username.as_deref();
+    let first_name = Some(q.from.first_name.as_str());
+
+    let user = {
+        let db = db.lock().await;
+        match check_user_access(&db, chat_id, username, first_name, &config)? {
+            AccessResult::Allowed(user) | AccessResult::NewUser(user) => user,
+            AccessResult::LimitReached => {
+                bot.answer_callback_query(q.id).await?;
+                return Ok(());
+            }
+        }
+    };
+
     if let Some(data) = &q.data {
-        if let Some(exercise_id) = data.strip_prefix("ex:") {
+        // Handle "show all exercises" callback
+        if data == "show_all" {
+            let keyboard = make_exercises_keyboard();
+            if let Some(msg) = &q.message {
+                bot.edit_message_text(msg.chat().id, msg.id(), "Выбери упражнение:")
+                    .reply_markup(keyboard)
+                    .await?;
+            }
+        }
+        // Handle exercise selection
+        else if let Some(exercise_id) = data.strip_prefix("ex:") {
             if let Some(exercise) = find_exercise(exercise_id) {
                 // Set state to waiting for pulse before exercise
                 dialogue.update(State::WaitingForPulseBefore {
                     exercise_id: exercise_id.to_string(),
                     exercise_name: exercise.name.to_string(),
+                    user_id: user.id,
                 }).await?;
 
                 let text = format!(
@@ -319,7 +495,7 @@ async fn handle_callback(
                     exercise.name
                 );
 
-                if let Some(msg) = q.message {
+                if let Some(msg) = &q.message {
                     bot.edit_message_text(msg.chat().id, msg.id(), text)
                         .await?;
                 }
@@ -336,12 +512,46 @@ async fn handle_message(
     msg: Message,
     dialogue: MyDialogue,
     db: Arc<Mutex<Database>>,
+    config: Arc<BotConfig>,
     _subscribers: Subscribers,
 ) -> HandlerResult {
     let state = dialogue.get().await?.unwrap_or_default();
 
     match state {
-        State::WaitingForPulseBefore { exercise_id, exercise_name } => {
+        State::WaitingForOwnerMessage => {
+            // Forward message to owner
+            if let Some(text) = msg.text() {
+                let owner = {
+                    let db = db.lock().await;
+                    db.get_owner()?
+                };
+
+                if let Some(owner) = owner {
+                    let from_username = msg.from.as_ref()
+                        .and_then(|u| u.username.as_ref())
+                        .map(|u| format!("@{}", u))
+                        .unwrap_or_else(|| "без username".to_string());
+                    let from_name = msg.from.as_ref()
+                        .map(|u| u.first_name.as_str())
+                        .unwrap_or("Аноним");
+
+                    let forward_text = format!(
+                        "📩 Запрос на доступ от {} ({}):\n\n{}",
+                        from_username, from_name, text
+                    );
+
+                    bot.send_message(ChatId(owner.chat_id), forward_text).await?;
+                    bot.send_message(msg.chat.id, "Сообщение отправлено владельцу. Ожидай ответа!").await?;
+                    info!("Message forwarded to owner from chat_id={}", msg.chat.id);
+                } else {
+                    bot.send_message(msg.chat.id, "Ошибка: владелец не найден").await?;
+                }
+
+                dialogue.reset().await?;
+            }
+        }
+
+        State::WaitingForPulseBefore { exercise_id, exercise_name, user_id } => {
             if let Some(text) = msg.text() {
                 if let Ok(pulse) = text.trim().parse::<i32>() {
                     if pulse < 30 || pulse > 250 {
@@ -355,6 +565,7 @@ async fn handle_message(
                         exercise_name: exercise_name.clone(),
                         pulse_before: pulse,
                         start_time: Utc::now(),
+                        user_id,
                     }).await?;
 
                     let response = format!(
@@ -368,7 +579,7 @@ async fn handle_message(
             }
         }
 
-        State::WaitingForReps { exercise_id, exercise_name, pulse_before, start_time } => {
+        State::WaitingForReps { exercise_id, exercise_name, pulse_before, start_time, user_id } => {
             if let Some(text) = msg.text() {
                 if let Ok(reps) = text.trim().parse::<i32>() {
                     // Calculate duration
@@ -382,6 +593,7 @@ async fn handle_message(
                         pulse_before,
                         reps,
                         duration_secs,
+                        user_id,
                     }).await?;
 
                     let response = format!(
@@ -395,7 +607,7 @@ async fn handle_message(
             }
         }
 
-        State::WaitingForPulseAfter { exercise_id: _, exercise_name, pulse_before, reps, duration_secs } => {
+        State::WaitingForPulseAfter { exercise_id: _, exercise_name, pulse_before, reps, duration_secs, user_id } => {
             if let Some(text) = msg.text() {
                 if let Ok(pulse_after) = text.trim().parse::<i32>() {
                     if pulse_after < 30 || pulse_after > 250 {
@@ -414,14 +626,15 @@ async fn handle_message(
                         pulse_before: Some(pulse_before),
                         pulse_after: Some(pulse_after),
                         notes: None,
+                        user_id: Some(user_id),
                     };
 
                     // Count today's sets and total time for this exercise
                     let (today_sets, total_time) = {
                         let db = db.lock().await;
-                        db.add_training(&training)?;
+                        db.add_training(&training, user_id)?;
 
-                        let trainings = db.get_trainings()?;
+                        let trainings = db.get_trainings_for_user(user_id)?;
                         let today = Local::now().date_naive();
                         let today_exercises: Vec<_> = trainings.iter()
                             .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
@@ -460,9 +673,29 @@ async fn handle_message(
         }
 
         State::Start => {
-            // Unknown message, suggest /train
-            bot.send_message(msg.chat.id, "Жми /train чтобы начать тренировку")
-                .await?;
+            // Check if user exists, if not - might need registration check
+            let chat_id = msg.chat.id.0;
+            let username = msg.from.as_ref().and_then(|u| u.username.as_deref());
+            let first_name = msg.from.as_ref().map(|u| u.first_name.as_str());
+
+            let access = {
+                let db = db.lock().await;
+                check_user_access(&db, chat_id, username, first_name, &config)?
+            };
+
+            match access {
+                AccessResult::LimitReached => {
+                    let text = "Бот достиг лимита пользователей (10).\n\n\
+                        Напиши сообщение ниже - я передам его владельцу для обсуждения доступа.";
+                    bot.send_message(msg.chat.id, text).await?;
+                    dialogue.update(State::WaitingForOwnerMessage).await?;
+                }
+                _ => {
+                    // User is registered, suggest /train
+                    bot.send_message(msg.chat.id, "Жми /train чтобы начать тренировку")
+                        .await?;
+                }
+            }
         }
     }
 

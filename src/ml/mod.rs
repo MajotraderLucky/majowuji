@@ -1,10 +1,15 @@
 //! ML module - Training predictions and recommendations
 //!
-//! Future features:
+//! Features:
+//! - Muscle group load tracking
+//! - Exercise recommendations based on balance
 //! - Progress prediction based on historical data
-//! - Optimal training load recommendations
-//! - Recovery time estimation
-//! - Technique improvement suggestions
+
+pub mod muscle_tracker;
+pub mod recommender;
+
+pub use muscle_tracker::MuscleTracker;
+pub use recommender::Recommender;
 
 use crate::db::Training;
 

@@ -5,6 +5,17 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
+/// User record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: i64,
+    pub chat_id: i64,
+    pub username: Option<String>,
+    pub first_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub is_owner: bool,
+}
+
 /// Training session record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Training {
@@ -17,6 +28,7 @@ pub struct Training {
     pub pulse_before: Option<i32>,   // Heart rate before exercise
     pub pulse_after: Option<i32>,    // Heart rate after exercise
     pub notes: Option<String>,
+    pub user_id: Option<i64>,        // Owner of this training record
 }
 
 /// Database wrapper
@@ -35,6 +47,20 @@ impl Database {
 
     /// Initialize database schema
     fn init_schema(&self) -> Result<()> {
+        // Users table
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER UNIQUE NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                created_at TEXT NOT NULL,
+                is_owner BOOLEAN DEFAULT FALSE
+            )",
+            [],
+        )?;
+
+        // Trainings table
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS trainings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +71,8 @@ impl Database {
                 duration_secs INTEGER,
                 pulse_before INTEGER,
                 pulse_after INTEGER,
-                notes TEXT
+                notes TEXT,
+                user_id INTEGER REFERENCES users(id)
             )",
             [],
         )?;
@@ -76,11 +103,115 @@ impl Database {
             );
         }
 
+        // Migration: add user_id column if missing
+        let has_user_id: bool = self.conn
+            .prepare("SELECT user_id FROM trainings LIMIT 1")
+            .is_ok();
+        if !has_user_id {
+            let _ = self.conn.execute(
+                "ALTER TABLE trainings ADD COLUMN user_id INTEGER REFERENCES users(id)",
+                [],
+            );
+        }
+
         Ok(())
     }
 
-    /// Add new training record
-    pub fn add_training(&self, training: &Training) -> Result<i64> {
+    // ==================== USER METHODS ====================
+
+    /// Get or create user by chat_id (first user becomes owner)
+    pub fn get_or_create_user(
+        &self,
+        chat_id: i64,
+        username: Option<&str>,
+        first_name: Option<&str>,
+    ) -> Result<User> {
+        // Check if user exists
+        if let Some(user) = self.get_user_by_chat_id(chat_id)? {
+            return Ok(user);
+        }
+
+        // First user becomes owner
+        let is_owner = self.count_users()? == 0;
+
+        // Create new user
+        self.conn.execute(
+            "INSERT INTO users (chat_id, username, first_name, created_at, is_owner) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![chat_id, username, first_name, Utc::now().to_rfc3339(), is_owner],
+        )?;
+
+        self.get_user_by_chat_id(chat_id)?
+            .ok_or_else(|| anyhow::anyhow!("Failed to create user"))
+    }
+
+    /// Get user by chat_id
+    pub fn get_user_by_chat_id(&self, chat_id: i64) -> Result<Option<User>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, chat_id, username, first_name, created_at, is_owner FROM users WHERE chat_id = ?1"
+        )?;
+
+        let user = stmt.query_row([chat_id], |row| {
+            let date_str: String = row.get(4)?;
+            Ok(User {
+                id: row.get(0)?,
+                chat_id: row.get(1)?,
+                username: row.get(2)?,
+                first_name: row.get(3)?,
+                created_at: DateTime::parse_from_rfc3339(&date_str)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                is_owner: row.get(5)?,
+            })
+        });
+
+        match user {
+            Ok(u) => Ok(Some(u)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Count total users
+    pub fn count_users(&self) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM users",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Get owner user
+    pub fn get_owner(&self) -> Result<Option<User>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, chat_id, username, first_name, created_at, is_owner FROM users WHERE is_owner = 1"
+        )?;
+
+        let user = stmt.query_row([], |row| {
+            let date_str: String = row.get(4)?;
+            Ok(User {
+                id: row.get(0)?,
+                chat_id: row.get(1)?,
+                username: row.get(2)?,
+                first_name: row.get(3)?,
+                created_at: DateTime::parse_from_rfc3339(&date_str)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                is_owner: row.get(5)?,
+            })
+        });
+
+        match user {
+            Ok(u) => Ok(Some(u)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    // ==================== TRAINING METHODS ====================
+
+    /// Add training record without user (CLI backward compatibility)
+    pub fn add_training_cli(&self, training: &Training) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO trainings (date, exercise, sets, reps, duration_secs, pulse_before, pulse_after, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
@@ -97,10 +228,57 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Get all trainings
+    /// Add new training record for a user
+    pub fn add_training(&self, training: &Training, user_id: i64) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO trainings (date, exercise, sets, reps, duration_secs, pulse_before, pulse_after, notes, user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                training.date.to_rfc3339(),
+                training.exercise,
+                training.sets,
+                training.reps,
+                training.duration_secs,
+                training.pulse_before,
+                training.pulse_after,
+                training.notes,
+                user_id,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Get trainings for a specific user
+    pub fn get_trainings_for_user(&self, user_id: i64) -> Result<Vec<Training>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, date, exercise, sets, reps, duration_secs, pulse_before, pulse_after, notes, user_id FROM trainings WHERE user_id = ?1 ORDER BY date DESC"
+        )?;
+
+        let trainings = stmt.query_map([user_id], |row| {
+            let date_str: String = row.get(1)?;
+            Ok(Training {
+                id: Some(row.get(0)?),
+                date: DateTime::parse_from_rfc3339(&date_str)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                exercise: row.get(2)?,
+                sets: row.get(3)?,
+                reps: row.get(4)?,
+                duration_secs: row.get(5)?,
+                pulse_before: row.get(6)?,
+                pulse_after: row.get(7)?,
+                notes: row.get(8)?,
+                user_id: row.get(9)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(trainings)
+    }
+
+    /// Get all trainings (for CLI/backward compatibility)
     pub fn get_trainings(&self) -> Result<Vec<Training>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, date, exercise, sets, reps, duration_secs, pulse_before, pulse_after, notes FROM trainings ORDER BY date DESC"
+            "SELECT id, date, exercise, sets, reps, duration_secs, pulse_before, pulse_after, notes, user_id FROM trainings ORDER BY date DESC"
         )?;
 
         let trainings = stmt.query_map([], |row| {
@@ -117,10 +295,24 @@ impl Database {
                 pulse_before: row.get(6)?,
                 pulse_after: row.get(7)?,
                 notes: row.get(8)?,
+                user_id: row.get(9)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
         Ok(trainings)
+    }
+
+    /// Migrate existing trainings to owner (call after first user registration)
+    pub fn migrate_trainings_to_owner(&self) -> Result<usize> {
+        if let Some(owner) = self.get_owner()? {
+            let affected = self.conn.execute(
+                "UPDATE trainings SET user_id = ?1 WHERE user_id IS NULL",
+                [owner.id],
+            )?;
+            Ok(affected)
+        } else {
+            Ok(0)
+        }
     }
 }

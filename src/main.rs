@@ -91,8 +91,9 @@ async fn main() -> Result<()> {
                 pulse_before: None,
                 pulse_after: None,
                 notes,
+                user_id: None,
             };
-            let id = db.add_training(&training)?;
+            let id = db.add_training_cli(&training)?;
             println!("Logged: {} - {}x{} (id: {})", exercise, sets, reps, id);
         }
 
