@@ -130,7 +130,8 @@ async fn main() -> Result<()> {
 
         Some(Commands::Bot { token }) => {
             println!("Starting Telegram bot...");
-            majowuji::bot::run_bot(token).await?;
+            println!("База данных: {}", DB_PATH);
+            majowuji::bot::run_bot(token, DB_PATH).await?;
         }
 
         None => {

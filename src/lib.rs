@@ -4,7 +4,9 @@
 
 pub mod bot;
 pub mod db;
+pub mod exercises;
 pub mod ml;
 pub mod tui;
 
 pub use db::Database;
+pub use exercises::{Exercise, BASE_EXERCISES, get_base_exercises};

@@ -1,73 +1,274 @@
-//! Telegram bot module - Remote training logging
+//! Telegram bot module - Remote training logging with hourly reminders
 
-use teloxide::prelude::*;
-use teloxide::utils::command::BotCommands;
+use std::sync::Arc;
+use chrono::{Local, Utc};
+use teloxide::{
+    prelude::*,
+    types::{InlineKeyboardButton, InlineKeyboardMarkup},
+    utils::command::BotCommands,
+    dispatching::dialogue::{InMemStorage, Dialogue},
+};
+use tokio::sync::Mutex;
 
-#[derive(BotCommands, Clone)]
-#[command(rename_rule = "lowercase", description = "Available commands:")]
-pub enum Command {
-    #[command(description = "Start the bot")]
+use crate::db::{Database, Training};
+use crate::exercises::{get_base_exercises, find_exercise};
+
+type MyDialogue = Dialogue<State, InMemStorage<State>>;
+type HandlerResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+#[derive(Clone, Default)]
+pub enum State {
+    #[default]
     Start,
-    #[command(description = "Show help")]
-    Help,
-    #[command(description = "Log training: /log <exercise> <sets>x<reps>")]
-    Log(String),
-    #[command(description = "Show today's trainings")]
-    Today,
-    #[command(description = "Show statistics")]
-    Stats,
+    WaitingForReps {
+        exercise_id: String,
+        exercise_name: String,
+    },
 }
 
-/// Start the Telegram bot
-pub async fn run_bot(token: String) -> anyhow::Result<()> {
-    let bot = Bot::new(token);
+#[derive(BotCommands, Clone)]
+#[command(rename_rule = "lowercase", description = "Команды бота:")]
+pub enum Command {
+    #[command(description = "Начать работу")]
+    Start,
+    #[command(description = "Показать помощь")]
+    Help,
+    #[command(description = "Выбрать упражнение")]
+    Train,
+    #[command(description = "Сегодняшние тренировки")]
+    Today,
+    #[command(description = "Статистика")]
+    Stats,
+    #[command(description = "Включить напоминания")]
+    Remind,
+}
 
-    Command::repl(bot, answer).await;
+/// Create inline keyboard with base exercises
+fn make_exercises_keyboard() -> InlineKeyboardMarkup {
+    let exercises = get_base_exercises();
+
+    let buttons: Vec<Vec<InlineKeyboardButton>> = exercises
+        .chunks(2)
+        .map(|chunk| {
+            chunk.iter().map(|ex| {
+                let label = format!("{} {}", ex.category.emoji(), ex.name);
+                InlineKeyboardButton::callback(label, format!("ex:{}", ex.id))
+            }).collect()
+        })
+        .collect();
+
+    InlineKeyboardMarkup::new(buttons)
+}
+
+/// Start the Telegram bot with reminders
+pub async fn run_bot(token: String, db_path: &str) -> anyhow::Result<()> {
+    let bot = Bot::new(token);
+    let db = Arc::new(Mutex::new(Database::open(db_path)?));
+
+    let handler = dptree::entry()
+        .branch(
+            Update::filter_message()
+                .filter_command::<Command>()
+                .endpoint(handle_command),
+        )
+        .branch(
+            Update::filter_message()
+                .endpoint(handle_message),
+        )
+        .branch(
+            Update::filter_callback_query()
+                .endpoint(handle_callback),
+        );
+
+    Dispatcher::builder(bot, handler)
+        .dependencies(dptree::deps![InMemStorage::<State>::new(), db])
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
+
     Ok(())
 }
 
-async fn answer(bot: Bot, msg: Message, cmd: Command) -> ResponseResult<()> {
+async fn handle_command(
+    bot: Bot,
+    msg: Message,
+    cmd: Command,
+    _dialogue: MyDialogue,
+    db: Arc<Mutex<Database>>,
+) -> HandlerResult {
     match cmd {
         Command::Start => {
-            bot.send_message(msg.chat.id, "无极 majowuji - Training Tracker\n\nUse /help to see commands")
-                .await?;
+            let text = "🥋 无极 majowuji\n\n\
+                Трекер тренировок боевых искусств\n\n\
+                /train - выбрать упражнение\n\
+                /today - сегодняшние тренировки\n\
+                /stats - статистика\n\
+                /remind - включить напоминания";
+            bot.send_message(msg.chat.id, text).await?;
         }
+
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
                 .await?;
         }
-        Command::Log(input) => {
-            // Parse format: "exercise sets reps" or "exercise setsxreps"
-            let parts: Vec<&str> = input.split_whitespace().collect();
-            let response = if parts.len() >= 2 {
-                let exercise = parts[0];
-                let (sets, reps) = if parts.len() == 2 && parts[1].contains('x') {
-                    // Format: "jab 3x10"
-                    let sr: Vec<&str> = parts[1].split('x').collect();
-                    (sr[0].parse().unwrap_or(1), sr[1].parse().unwrap_or(10))
-                } else if parts.len() >= 3 {
-                    // Format: "jab 3 10"
-                    (parts[1].parse().unwrap_or(1), parts[2].parse().unwrap_or(10))
-                } else {
-                    (1, 10)
-                };
-                // TODO: Save to database
-                format!("Logged: {} - {}x{}\n(Database integration pending)", exercise, sets, reps)
-            } else {
-                "Usage: /log <exercise> <sets>x<reps>\nExample: /log jab 3x10".to_string()
-            };
-            bot.send_message(msg.chat.id, response).await?;
-        }
-        Command::Today => {
-            // TODO: Fetch from database
-            bot.send_message(msg.chat.id, "Today's trainings:\n(Coming soon)")
+
+        Command::Train => {
+            let keyboard = make_exercises_keyboard();
+            bot.send_message(msg.chat.id, "Выбери упражнение:")
+                .reply_markup(keyboard)
                 .await?;
         }
+
+        Command::Today => {
+            let db = db.lock().await;
+            let trainings = db.get_trainings()?;
+            let today = Local::now().date_naive();
+
+            let today_trainings: Vec<_> = trainings
+                .iter()
+                .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
+                .collect();
+
+            if today_trainings.is_empty() {
+                bot.send_message(msg.chat.id, "Сегодня ещё не было тренировок. Жми /train!")
+                    .await?;
+            } else {
+                let mut text = String::from("📊 Сегодня:\n\n");
+                for t in today_trainings {
+                    text.push_str(&format!(
+                        "• {} - {}x{}\n",
+                        t.exercise, t.sets, t.reps
+                    ));
+                }
+                bot.send_message(msg.chat.id, text).await?;
+            }
+        }
+
         Command::Stats => {
-            // TODO: Calculate statistics
-            bot.send_message(msg.chat.id, "Statistics:\n(Coming soon)")
+            let db = db.lock().await;
+            let trainings = db.get_trainings()?;
+
+            let total = trainings.len();
+            let today = Local::now().date_naive();
+            let today_count = trainings
+                .iter()
+                .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
+                .count();
+
+            let text = format!(
+                "📈 Статистика\n\n\
+                Всего тренировок: {}\n\
+                Сегодня: {}",
+                total, today_count
+            );
+
+            bot.send_message(msg.chat.id, text).await?;
+        }
+
+        Command::Remind => {
+            bot.send_message(
+                msg.chat.id,
+                "⏰ Напоминания пока в разработке.\n\n\
+                Пока можешь использовать системный таймер:\n\
+                watch -n 3600 'notify-send \"Время тренировки!\"'"
+            ).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_callback(
+    bot: Bot,
+    q: CallbackQuery,
+    dialogue: MyDialogue,
+    db: Arc<Mutex<Database>>,
+) -> HandlerResult {
+    if let Some(data) = &q.data {
+        if let Some(exercise_id) = data.strip_prefix("ex:") {
+            if let Some(exercise) = find_exercise(exercise_id) {
+                // Set state to waiting for reps
+                dialogue.update(State::WaitingForReps {
+                    exercise_id: exercise_id.to_string(),
+                    exercise_name: exercise.name.to_string(),
+                }).await?;
+
+                let text = format!(
+                    "{} {}\n\nВведи результат в формате:\nсеты x повторы\n\nПример: 3x20 или 3 20",
+                    exercise.category.emoji(),
+                    exercise.name
+                );
+
+                if let Some(msg) = q.message {
+                    bot.edit_message_text(msg.chat().id, msg.id(), text)
+                        .await?;
+                }
+            }
+        }
+    }
+
+    bot.answer_callback_query(q.id).await?;
+    Ok(())
+}
+
+async fn handle_message(
+    bot: Bot,
+    msg: Message,
+    dialogue: MyDialogue,
+    db: Arc<Mutex<Database>>,
+) -> HandlerResult {
+    let state = dialogue.get().await?.unwrap_or_default();
+
+    match state {
+        State::WaitingForReps { exercise_id: _, exercise_name } => {
+            if let Some(text) = msg.text() {
+                // Parse "3x20" or "3 20"
+                let parts: Vec<&str> = text.split(|c| c == 'x' || c == 'х' || c == ' ')
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if parts.len() >= 2 {
+                    let sets: i32 = parts[0].parse().unwrap_or(1);
+                    let reps: i32 = parts[1].parse().unwrap_or(10);
+
+                    // Save to database
+                    let training = Training {
+                        id: None,
+                        date: Utc::now(),
+                        exercise: exercise_name.clone(),
+                        sets,
+                        reps,
+                        notes: None,
+                    };
+
+                    {
+                        let db = db.lock().await;
+                        db.add_training(&training)?;
+                    }
+
+                    let response = format!(
+                        "✅ Записано!\n\n{} - {}x{}\n\n/train - ещё упражнение\n/today - результаты дня",
+                        exercise_name, sets, reps
+                    );
+
+                    bot.send_message(msg.chat.id, response).await?;
+
+                    dialogue.reset().await?;
+                } else {
+                    bot.send_message(
+                        msg.chat.id,
+                        "Не понял. Введи в формате: 3x20 или 3 20"
+                    ).await?;
+                }
+            }
+        }
+        State::Start => {
+            // Unknown message, suggest /train
+            bot.send_message(msg.chat.id, "Жми /train чтобы начать тренировку")
                 .await?;
         }
     }
+
     Ok(())
 }
