@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use tracing::{info, error};
 
 use crate::db::{Database, Training, User};
-use crate::exercises::{get_base_exercises, find_exercise};
+use crate::exercises::{get_base_exercises, find_exercise, EXTRA_EXERCISES};
 use crate::ml::Recommender;
 
 /// Bot configuration
@@ -107,7 +107,7 @@ pub enum Command {
 fn make_exercises_keyboard() -> InlineKeyboardMarkup {
     let exercises = get_base_exercises();
 
-    let buttons: Vec<Vec<InlineKeyboardButton>> = exercises
+    let mut buttons: Vec<Vec<InlineKeyboardButton>> = exercises
         .chunks(2)
         .map(|chunk| {
             chunk.iter().map(|ex| {
@@ -116,6 +116,31 @@ fn make_exercises_keyboard() -> InlineKeyboardMarkup {
             }).collect()
         })
         .collect();
+
+    // Add "From book" button
+    buttons.push(vec![
+        InlineKeyboardButton::callback("📖 Из книги", "show_extra")
+    ]);
+
+    InlineKeyboardMarkup::new(buttons)
+}
+
+/// Create inline keyboard with extra exercises from the book
+fn make_extra_exercises_keyboard() -> InlineKeyboardMarkup {
+    let mut buttons: Vec<Vec<InlineKeyboardButton>> = EXTRA_EXERCISES
+        .chunks(2)
+        .map(|chunk| {
+            chunk.iter().map(|ex| {
+                let label = format!("{} {}", ex.category.emoji(), ex.name);
+                InlineKeyboardButton::callback(label, format!("ex:{}", ex.id))
+            }).collect()
+        })
+        .collect();
+
+    // Add back button
+    buttons.push(vec![
+        InlineKeyboardButton::callback("⬅️ Базовые", "show_all")
+    ]);
 
     InlineKeyboardMarkup::new(buttons)
 }
@@ -501,6 +526,15 @@ async fn handle_callback(
             let keyboard = make_exercises_keyboard();
             if let Some(msg) = &q.message {
                 bot.edit_message_text(msg.chat().id, msg.id(), "Выбери упражнение:")
+                    .reply_markup(keyboard)
+                    .await?;
+            }
+        }
+        // Handle "show extra exercises" callback
+        else if data == "show_extra" {
+            let keyboard = make_extra_exercises_keyboard();
+            if let Some(msg) = &q.message {
+                bot.edit_message_text(msg.chat().id, msg.id(), "📖 Упражнения из книги:")
                     .reply_markup(keyboard)
                     .await?;
             }
