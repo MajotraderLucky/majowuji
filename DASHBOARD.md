@@ -2,14 +2,15 @@
 
 ## Project Status
 
-| Component        | Status      | Progress |
-|------------------|-------------|----------|
-| CLI              | [+] Ready   | 100%     |
-| SQLite Storage   | [+] Ready   | 100%     |
-| TUI Dashboard    | [~] Basic   | 40%      |
-| Telegram Bot     | [~] Basic   | 30%      |
-| ML Analytics     | [~] Basic   | 20%      |
-| Charts/Graphs    | [ ] Planned | 0%       |
+| Component        | Status       | Progress |
+|------------------|--------------|----------|
+| CLI              | [+] Ready    | 100%     |
+| SQLite Storage   | [+] Ready    | 100%     |
+| TUI Dashboard    | [~] Basic    | 40%      |
+| Telegram Bot     | [+] Deployed | 80%      |
+| Hourly Reminders | [+] Working  | 100%     |
+| ML Analytics     | [~] Basic    | 20%      |
+| Charts/Graphs    | [ ] Planned  | 0%       |
 
 ## Training Program
 
@@ -59,10 +60,12 @@ Book location: `docs/you-are-your-own-gym.txt`
 - [ ] Pattern recognition
 
 ### Phase 4: Integration
-- [ ] Telegram bot with DB
-- [ ] Daily reminders
+- [+] Telegram bot with DB
+- [+] Hourly reminders (systemd on archbook)
 - [ ] Export to JSON/CSV
 - [ ] Sync between devices
+
+See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 
 ## Current Sprint
 
@@ -71,9 +74,11 @@ Book location: `docs/you-are-your-own-gym.txt`
 | Test logging functionality         | [+] Done    |
 | Add book to docs                   | [+] Done    |
 | Create dashboard                   | [+] Done    |
+| Deploy Telegram bot to archbook    | [+] Done    |
+| Add hourly reminders               | [+] Done    |
+| Simplify input (just reps)         | [~] In dev  |
 | Add TUI progress charts            | [ ] Next    |
 | Implement exercise categories      | [ ] Backlog |
-| Add date range filtering           | [ ] Backlog |
 
 ## Quick Commands
 

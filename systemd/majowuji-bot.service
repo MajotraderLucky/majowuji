@@ -1,0 +1,22 @@
+[Unit]
+Description=Majowuji Telegram Bot - Martial Arts Training Tracker
+After=network.target
+
+[Service]
+Type=simple
+User=sergey
+WorkingDirectory=/home/sergey/majowuji
+ExecStart=/home/sergey/majowuji/majowuji bot
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+EnvironmentFile=/home/sergey/majowuji/.env
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/sergey/majowuji
+
+[Install]
+WantedBy=multi-user.target

@@ -6,14 +6,15 @@ Personal martial arts training tracker with ML predictions.
 
 ## Features
 
-| Feature          | Status      | Description                          |
-|------------------|-------------|--------------------------------------|
-| Training Log     | [+] Ready   | Record exercises, sets, reps, notes  |
-| TUI Dashboard    | [+] Ready   | Terminal UI with ratatui             |
-| SQLite Storage   | [+] Ready   | Local database for all data          |
-| Telegram Bot     | [~] Basic   | Remote logging via Telegram          |
-| Analytics        | [~] Basic   | Volume tracking, frequency stats     |
-| ML Predictions   | [ ] Planned | Training load recommendations        |
+| Feature          | Status       | Description                          |
+|------------------|--------------|--------------------------------------|
+| Training Log     | [+] Ready    | Record exercises, sets, reps, notes  |
+| TUI Dashboard    | [+] Ready    | Terminal UI with ratatui             |
+| SQLite Storage   | [+] Ready    | Local database for all data          |
+| Telegram Bot     | [+] Deployed | Remote logging via Telegram          |
+| Hourly Reminders | [+] Working  | Inline keyboard + auto-counting sets |
+| Analytics        | [~] Basic    | Volume tracking, frequency stats     |
+| ML Predictions   | [ ] Planned  | Training load recommendations        |
 
 ## Installation
 
@@ -88,10 +89,13 @@ majowuji bot --token "your_bot_token"
 
 Bot commands:
 - `/start` - Initialize bot
-- `/help` - Show available commands
-- `/log jab 3x50` - Log training
+- `/train` - Select exercise (inline keyboard)
 - `/today` - Show today's trainings
 - `/stats` - Show statistics
+- `/remind` - Enable hourly reminders
+- `/stop` - Disable reminders
+
+For deployment to local server, see [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## Tech Stack
 
@@ -108,12 +112,18 @@ Bot commands:
 
 - [ ] TUI: Add charts for progress visualization
 - [ ] TUI: Interactive training input
-- [ ] Bot: Database integration
-- [ ] Bot: Daily reminders
+- [+] Bot: Database integration
+- [+] Bot: Hourly reminders
 - [ ] ML: Training load prediction
 - [ ] ML: Recovery time estimation
 - [ ] ML: Technique improvement suggestions
 - [ ] Export: Training data to JSON/CSV
+
+## Documentation
+
+- [DASHBOARD.md](DASHBOARD.md) - Project status and roadmap
+- [docs/DEPLOY.md](docs/DEPLOY.md) - Deployment to archbook server
+- [docs/you-are-your-own-gym.txt](docs/you-are-your-own-gym.txt) - Exercise reference
 
 ## License
 

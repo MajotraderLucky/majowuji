@@ -199,17 +199,31 @@ async fn handle_command(
 
             let total = trainings.len();
             let today = Local::now().date_naive();
-            let today_count = trainings
+            let today_trainings: Vec<_> = trainings
                 .iter()
                 .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
-                .count();
+                .collect();
 
-            let text = format!(
+            let mut text = format!(
                 "📈 Статистика\n\n\
-                Всего тренировок: {}\n\
-                Сегодня: {}",
-                total, today_count
+                Всего подходов: {}\n\
+                Сегодня: {}\n",
+                total, today_trainings.len()
             );
+
+            // Group today's trainings by exercise
+            if !today_trainings.is_empty() {
+                text.push_str("\n📊 Сегодня:\n");
+                let mut exercise_stats: std::collections::HashMap<&str, (usize, i32)> = std::collections::HashMap::new();
+                for t in &today_trainings {
+                    let entry = exercise_stats.entry(&t.exercise).or_insert((0, 0));
+                    entry.0 += 1;  // sets count
+                    entry.1 += t.reps;  // total reps
+                }
+                for (exercise, (sets, reps)) in exercise_stats {
+                    text.push_str(&format!("• {} - {} подх., {} повт.\n", exercise, sets, reps));
+                }
+            }
 
             bot.send_message(msg.chat.id, text).await?;
         }
@@ -268,7 +282,7 @@ async fn handle_callback(
                 }).await?;
 
                 let text = format!(
-                    "{} {}\n\nВведи результат в формате:\nсеты x повторы\n\nПример: 3x20 или 3 20",
+                    "{} {}\n\nСколько повторов?",
                     exercise.category.emoji(),
                     exercise.name
                 );
@@ -297,43 +311,40 @@ async fn handle_message(
     match state {
         State::WaitingForReps { exercise_id: _, exercise_name } => {
             if let Some(text) = msg.text() {
-                // Parse "3x20" or "3 20"
-                let parts: Vec<&str> = text.split(|c| c == 'x' || c == 'х' || c == ' ')
-                    .filter(|s| !s.is_empty())
-                    .collect();
-
-                if parts.len() >= 2 {
-                    let sets: i32 = parts[0].parse().unwrap_or(1);
-                    let reps: i32 = parts[1].parse().unwrap_or(10);
-
-                    // Save to database
+                // Parse just reps number - each entry is 1 set
+                if let Ok(reps) = text.trim().parse::<i32>() {
+                    // Save to database - each entry is 1 set
                     let training = Training {
                         id: None,
                         date: Utc::now(),
                         exercise: exercise_name.clone(),
-                        sets,
+                        sets: 1,
                         reps,
                         notes: None,
                     };
 
-                    {
+                    // Count today's sets for this exercise
+                    let today_sets = {
                         let db = db.lock().await;
                         db.add_training(&training)?;
-                    }
+
+                        let trainings = db.get_trainings()?;
+                        let today = Local::now().date_naive();
+                        trainings.iter()
+                            .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
+                            .filter(|t| t.exercise == exercise_name)
+                            .count()
+                    };
 
                     let response = format!(
-                        "✅ Записано!\n\n{} - {}x{}\n\n/train - ещё упражнение\n/today - результаты дня",
-                        exercise_name, sets, reps
+                        "✅ +1 подход!\n\n{} - {} повторов\nСегодня подходов: {}\n\n/train - ещё",
+                        exercise_name, reps, today_sets
                     );
 
                     bot.send_message(msg.chat.id, response).await?;
-
                     dialogue.reset().await?;
                 } else {
-                    bot.send_message(
-                        msg.chat.id,
-                        "Не понял. Введи в формате: 3x20 или 3 20"
-                    ).await?;
+                    bot.send_message(msg.chat.id, "Введи число повторов").await?;
                 }
             }
         }
