@@ -65,6 +65,7 @@ pub struct Exercise {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum Category {
     Push,      // Отжимания, жимы
+    Pull,      // Подтягивания, тяги
     Core,      // Пресс, планка
     Legs,      // Ноги, приседания
     Taiji,     // Тайцзицюань
@@ -75,6 +76,7 @@ impl Category {
     pub fn emoji(&self) -> &'static str {
         match self {
             Category::Push => "💪",
+            Category::Pull => "🏋️",
             Category::Core => "🎯",
             Category::Legs => "🦵",
             Category::Taiji => "☯",
@@ -100,6 +102,13 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         is_base: true,
     },
     Exercise {
+        id: "let_me_in",
+        name: "впусти меня (тяга на двери)",
+        category: Category::Pull,
+        muscle_groups: &[MuscleGroup::Back, MuscleGroup::Biceps, MuscleGroup::Shoulders],
+        is_base: true,
+    },
+    Exercise {
         id: "jackknife",
         name: "пресс складной нож",
         category: Category::Core,
@@ -118,6 +127,20 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         name: "приседания с ударами",
         category: Category::Legs,
         muscle_groups: &[MuscleGroup::Quads, MuscleGroup::Glutes, MuscleGroup::Core, MuscleGroup::Shoulders],
+        is_base: true,
+    },
+    Exercise {
+        id: "calf_raises",
+        name: "подъём на носки",
+        category: Category::Legs,
+        muscle_groups: &[MuscleGroup::Calves],
+        is_base: true,
+    },
+    Exercise {
+        id: "romanian_deadlift",
+        name: "румынская тяга на одной ноге",
+        category: Category::Legs,
+        muscle_groups: &[MuscleGroup::Hamstrings, MuscleGroup::Glutes, MuscleGroup::Core],
         is_base: true,
     },
     Exercise {
