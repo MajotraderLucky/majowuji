@@ -5,7 +5,6 @@
 use anyhow::Result;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use tracing_subscriber;
 
 use majowuji::db::{Database, Training};
 use majowuji::ml::Analytics;
@@ -67,6 +66,9 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env file if present
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
