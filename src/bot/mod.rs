@@ -706,16 +706,17 @@ async fn handle_message(
                         user_id,
                     }).await?;
 
-                    let question = if is_timed {
-                        "Сколько секунд?"
+                    let response = if is_timed {
+                        format!(
+                            "Пульс: {} уд/мин\n\nВыполняй {}!\n\n⏱ Таймер запущен. Напиши что угодно когда закончишь",
+                            pulse, exercise_name
+                        )
                     } else {
-                        "Сколько повторов?"
+                        format!(
+                            "Пульс: {} уд/мин\n\nВыполняй {}!\n\nСколько повторов?",
+                            pulse, exercise_name
+                        )
                     };
-
-                    let response = format!(
-                        "Пульс: {} уд/мин\n\nВыполняй {}!\n\n{}",
-                        pulse, exercise_name, question
-                    );
                     bot.send_message(msg.chat.id, response).await?;
                 } else {
                     bot.send_message(msg.chat.id, "Введи пульс (число)").await?;
@@ -725,23 +726,19 @@ async fn handle_message(
 
         State::WaitingForReps { exercise_id, exercise_name, pulse_before, start_time, user_id } => {
             if let Some(text) = msg.text() {
-                if let Ok(input_value) = text.trim().parse::<i32>() {
-                    // Check if exercise is timed
-                    let is_timed = find_exercise(&exercise_id)
-                        .map(|ex| ex.is_timed)
-                        .unwrap_or(false);
+                // Check if exercise is timed
+                let is_timed = find_exercise(&exercise_id)
+                    .map(|ex| ex.is_timed)
+                    .unwrap_or(false);
 
-                    // For timed exercises: input = seconds, reps = 1
-                    // For rep-based: input = reps, duration from timer
-                    let (reps, duration_secs) = if is_timed {
-                        (1, input_value)
-                    } else {
-                        let now = Utc::now();
-                        let duration = (now - start_time).num_seconds() as i32;
-                        (input_value, duration)
-                    };
+                if is_timed {
+                    // For timed exercises: accept ANY message, calculate duration automatically
+                    let now = Utc::now();
+                    let elapsed = (now - start_time).num_seconds() as i32;
+                    // Subtract 5 seconds for preparation time, minimum 1 second
+                    let duration_secs = (elapsed - 5).max(1);
+                    let reps = 1;
 
-                    // Move to waiting for pulse after
                     dialogue.update(State::WaitingForPulseAfter {
                         exercise_id,
                         exercise_name: exercise_name.clone(),
@@ -751,24 +748,34 @@ async fn handle_message(
                         user_id,
                     }).await?;
 
-                    let response = if is_timed {
-                        format!(
-                            "{} - {}с\n\nПульс после упражнения?",
-                            exercise_name, duration_secs
-                        )
-                    } else {
-                        format!(
-                            "{} - {} повторов за {}с\n\nПульс после упражнения?",
-                            exercise_name, reps, duration_secs
-                        )
-                    };
+                    let response = format!(
+                        "⏱ {} - {}с\n\nПульс после упражнения?",
+                        exercise_name, duration_secs
+                    );
                     bot.send_message(msg.chat.id, response).await?;
                 } else {
-                    let is_timed = find_exercise(&exercise_id)
-                        .map(|ex| ex.is_timed)
-                        .unwrap_or(false);
-                    let hint = if is_timed { "Введи время в секундах" } else { "Введи число повторов" };
-                    bot.send_message(msg.chat.id, hint).await?;
+                    // For rep-based exercises: require a number
+                    if let Ok(reps) = text.trim().parse::<i32>() {
+                        let now = Utc::now();
+                        let duration_secs = (now - start_time).num_seconds() as i32;
+
+                        dialogue.update(State::WaitingForPulseAfter {
+                            exercise_id,
+                            exercise_name: exercise_name.clone(),
+                            pulse_before,
+                            reps,
+                            duration_secs,
+                            user_id,
+                        }).await?;
+
+                        let response = format!(
+                            "{} - {} повторов за {}с\n\nПульс после упражнения?",
+                            exercise_name, reps, duration_secs
+                        );
+                        bot.send_message(msg.chat.id, response).await?;
+                    } else {
+                        bot.send_message(msg.chat.id, "Введи число повторов").await?;
+                    }
                 }
             }
         }
