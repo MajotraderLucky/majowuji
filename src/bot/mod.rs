@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use teloxide::{
     prelude::*,
     types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup},
@@ -14,8 +14,9 @@ use tokio::sync::Mutex;
 use tracing::{info, error};
 
 use crate::db::{Database, Training, User};
-use crate::exercises::{get_base_exercises, find_exercise, EXTRA_EXERCISES};
+use crate::exercises::{get_base_exercises, find_exercise, find_exercise_by_name, EXTRA_EXERCISES};
 use crate::ml::Recommender;
+use crate::tips;
 
 /// Bot configuration
 pub struct BotConfig {
@@ -39,6 +40,14 @@ type Subscribers = Arc<Mutex<HashSet<ChatId>>>;
 
 /// Reminder interval (1 hour = 3600 seconds)
 const REMINDER_INTERVAL_SECS: u64 = 3600;
+
+/// Moscow timezone offset (UTC+3)
+const MOSCOW_OFFSET_SECS: i32 = 3 * 3600;
+
+/// Get Moscow timezone for consistent date handling
+fn moscow_tz() -> FixedOffset {
+    FixedOffset::east_opt(MOSCOW_OFFSET_SECS).unwrap()
+}
 
 /// Format duration in seconds to human-readable string
 fn format_duration(secs: i32) -> String {
@@ -101,6 +110,8 @@ pub enum Command {
     Remind,
     #[command(description = "Выключить напоминания")]
     Stop,
+    #[command(description = "Совет из книги")]
+    Tip,
 }
 
 /// Create inline keyboard with base exercises
@@ -376,11 +387,11 @@ async fn handle_command(
         Command::Today => {
             let db = db.lock().await;
             let trainings = db.get_trainings_for_user(user.id)?;
-            let today = Local::now().date_naive();
+            let today = Utc::now().with_timezone(&moscow_tz()).date_naive();
 
             let today_trainings: Vec<_> = trainings
                 .iter()
-                .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
+                .filter(|t| t.date.with_timezone(&moscow_tz()).date_naive() == today)
                 .collect();
 
             if today_trainings.is_empty() {
@@ -403,35 +414,79 @@ async fn handle_command(
             let trainings = db.get_trainings_for_user(user.id)?;
 
             let total = trainings.len();
-            let today = Local::now().date_naive();
+            let today = Utc::now().with_timezone(&moscow_tz()).date_naive();
+            let week_ago = today - chrono::Duration::days(7);
+            let month_ago = today - chrono::Duration::days(30);
+
             let today_trainings: Vec<_> = trainings
                 .iter()
-                .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
+                .filter(|t| t.date.with_timezone(&moscow_tz()).date_naive() == today)
+                .collect();
+
+            let week_trainings: Vec<_> = trainings
+                .iter()
+                .filter(|t| t.date.with_timezone(&moscow_tz()).date_naive() > week_ago)
+                .collect();
+
+            let month_trainings: Vec<_> = trainings
+                .iter()
+                .filter(|t| t.date.with_timezone(&moscow_tz()).date_naive() > month_ago)
                 .collect();
 
             let today_time: i32 = today_trainings.iter()
                 .filter_map(|t| t.duration_secs)
                 .sum();
+            let week_time: i32 = week_trainings.iter()
+                .filter_map(|t| t.duration_secs)
+                .sum();
+            let month_time: i32 = month_trainings.iter()
+                .filter_map(|t| t.duration_secs)
+                .sum();
 
             let mut text = format!(
                 "📈 Статистика\n\n\
-                Всего подходов: {}\n\
-                Сегодня: {} ({})\n",
-                total, today_trainings.len(), format_duration(today_time)
+                Всего: {} подх.\n\
+                Сегодня: {} ({})\n\
+                Неделя: {} ({})\n\
+                Месяц: {} ({})\n",
+                total,
+                today_trainings.len(), format_duration(today_time),
+                week_trainings.len(), format_duration(week_time),
+                month_trainings.len(), format_duration(month_time)
             );
 
             // Group today's trainings by exercise
             if !today_trainings.is_empty() {
                 text.push_str("\n📊 Сегодня:\n");
-                let mut exercise_stats: std::collections::HashMap<&str, (usize, i32, i32)> = std::collections::HashMap::new();
+                // (sets, total_reps, total_time, max_time)
+                let mut exercise_stats: std::collections::HashMap<&str, (usize, i32, i32, i32)> = std::collections::HashMap::new();
                 for t in &today_trainings {
-                    let entry = exercise_stats.entry(&t.exercise).or_insert((0, 0, 0));
+                    let duration = t.duration_secs.unwrap_or(0);
+                    let entry = exercise_stats.entry(&t.exercise).or_insert((0, 0, 0, 0));
                     entry.0 += 1;  // sets count
                     entry.1 += t.reps;  // total reps
-                    entry.2 += t.duration_secs.unwrap_or(0);  // total time
+                    entry.2 += duration;  // total time
+                    entry.3 = entry.3.max(duration);  // max time (record)
                 }
-                for (exercise, (sets, reps, time)) in exercise_stats {
-                    text.push_str(&format!("• {} - {} подх., {} повт., {}\n", exercise, sets, reps, format_duration(time)));
+                for (exercise, (sets, reps, total_time, max_time)) in exercise_stats {
+                    // Check if exercise is timed
+                    let is_timed = find_exercise_by_name(exercise)
+                        .map(|ex| ex.is_timed)
+                        .unwrap_or(false);
+
+                    if is_timed {
+                        // For timed exercises: show max time and total
+                        text.push_str(&format!(
+                            "• {} - {} подх., макс. {}с, всего {}\n",
+                            exercise, sets, max_time, format_duration(total_time)
+                        ));
+                    } else {
+                        // For rep-based: show reps and time
+                        text.push_str(&format!(
+                            "• {} - {} подх., {} повт., {}\n",
+                            exercise, sets, reps, format_duration(total_time)
+                        ));
+                    }
                 }
             }
 
@@ -469,6 +524,15 @@ async fn handle_command(
                 bot.send_message(msg.chat.id, "Напоминания и так выключены.\n\n/remind - включить")
                     .await?;
             }
+        }
+
+        Command::Tip => {
+            let tip = tips::get_random_tip();
+            let text = format!(
+                "📖 Совет из книги\n\"You Are Your Own Gym\"\n\n{}\n\n/tip - ещё совет",
+                tips::format_tip(tip)
+            );
+            bot.send_message(msg.chat.id, text).await?;
         }
 
         Command::Balance => {
@@ -628,6 +692,11 @@ async fn handle_message(
                         return Ok(());
                     }
 
+                    // Check if exercise is timed (plank) vs rep-based (pushups)
+                    let is_timed = find_exercise(&exercise_id)
+                        .map(|ex| ex.is_timed)
+                        .unwrap_or(false);
+
                     // Move to waiting for reps, start timer
                     dialogue.update(State::WaitingForReps {
                         exercise_id,
@@ -637,9 +706,15 @@ async fn handle_message(
                         user_id,
                     }).await?;
 
+                    let question = if is_timed {
+                        "Сколько секунд?"
+                    } else {
+                        "Сколько повторов?"
+                    };
+
                     let response = format!(
-                        "Пульс: {} уд/мин\n\nВыполняй {}!\n\nСколько повторов?",
-                        pulse, exercise_name
+                        "Пульс: {} уд/мин\n\nВыполняй {}!\n\n{}",
+                        pulse, exercise_name, question
                     );
                     bot.send_message(msg.chat.id, response).await?;
                 } else {
@@ -650,10 +725,21 @@ async fn handle_message(
 
         State::WaitingForReps { exercise_id, exercise_name, pulse_before, start_time, user_id } => {
             if let Some(text) = msg.text() {
-                if let Ok(reps) = text.trim().parse::<i32>() {
-                    // Calculate duration
-                    let now = Utc::now();
-                    let duration_secs = (now - start_time).num_seconds() as i32;
+                if let Ok(input_value) = text.trim().parse::<i32>() {
+                    // Check if exercise is timed
+                    let is_timed = find_exercise(&exercise_id)
+                        .map(|ex| ex.is_timed)
+                        .unwrap_or(false);
+
+                    // For timed exercises: input = seconds, reps = 1
+                    // For rep-based: input = reps, duration from timer
+                    let (reps, duration_secs) = if is_timed {
+                        (1, input_value)
+                    } else {
+                        let now = Utc::now();
+                        let duration = (now - start_time).num_seconds() as i32;
+                        (input_value, duration)
+                    };
 
                     // Move to waiting for pulse after
                     dialogue.update(State::WaitingForPulseAfter {
@@ -665,24 +751,40 @@ async fn handle_message(
                         user_id,
                     }).await?;
 
-                    let response = format!(
-                        "{} - {} повторов за {}с\n\nПульс после упражнения?",
-                        exercise_name, reps, duration_secs
-                    );
+                    let response = if is_timed {
+                        format!(
+                            "{} - {}с\n\nПульс после упражнения?",
+                            exercise_name, duration_secs
+                        )
+                    } else {
+                        format!(
+                            "{} - {} повторов за {}с\n\nПульс после упражнения?",
+                            exercise_name, reps, duration_secs
+                        )
+                    };
                     bot.send_message(msg.chat.id, response).await?;
                 } else {
-                    bot.send_message(msg.chat.id, "Введи число повторов").await?;
+                    let is_timed = find_exercise(&exercise_id)
+                        .map(|ex| ex.is_timed)
+                        .unwrap_or(false);
+                    let hint = if is_timed { "Введи время в секундах" } else { "Введи число повторов" };
+                    bot.send_message(msg.chat.id, hint).await?;
                 }
             }
         }
 
-        State::WaitingForPulseAfter { exercise_id: _, exercise_name, pulse_before, reps, duration_secs, user_id } => {
+        State::WaitingForPulseAfter { exercise_id, exercise_name, pulse_before, reps, duration_secs, user_id } => {
             if let Some(text) = msg.text() {
                 if let Ok(pulse_after) = text.trim().parse::<i32>() {
                     if pulse_after < 30 || pulse_after > 250 {
                         bot.send_message(msg.chat.id, "Пульс должен быть от 30 до 250").await?;
                         return Ok(());
                     }
+
+                    // Check if exercise is timed
+                    let is_timed = find_exercise(&exercise_id)
+                        .map(|ex| ex.is_timed)
+                        .unwrap_or(false);
 
                     // Save to database
                     let training = Training {
@@ -698,15 +800,17 @@ async fn handle_message(
                         user_id: Some(user_id),
                     };
 
-                    // Count today's sets and total time for this exercise
-                    let (today_sets, total_time) = {
+                    // Count today's sets, total time, and personal record
+                    let (today_sets, total_time, personal_record, is_new_record) = {
                         let db = db.lock().await;
                         db.add_training(&training, user_id)?;
 
                         let trainings = db.get_trainings_for_user(user_id)?;
-                        let today = Local::now().date_naive();
+                        let today = Utc::now().with_timezone(&moscow_tz()).date_naive();
+
+                        // Today's stats
                         let today_exercises: Vec<_> = trainings.iter()
-                            .filter(|t| t.date.with_timezone(&Local).date_naive() == today)
+                            .filter(|t| t.date.with_timezone(&moscow_tz()).date_naive() == today)
                             .filter(|t| t.exercise == exercise_name)
                             .collect();
 
@@ -714,22 +818,74 @@ async fn handle_message(
                         let time: i32 = today_exercises.iter()
                             .filter_map(|t| t.duration_secs)
                             .sum();
-                        (sets, time)
+
+                        // Personal record for this exercise
+                        let all_this_exercise: Vec<_> = trainings.iter()
+                            .filter(|t| t.exercise == exercise_name)
+                            .collect();
+
+                        let total_attempts = all_this_exercise.len();
+                        let (record, is_new) = if is_timed {
+                            // For timed: max duration
+                            let max_duration = all_this_exercise.iter()
+                                .filter_map(|t| t.duration_secs)
+                                .max()
+                                .unwrap_or(0);
+                            // New record if beat previous AND not first attempt ever
+                            (max_duration, duration_secs >= max_duration && total_attempts > 1)
+                        } else {
+                            // For rep-based: max reps in single set
+                            let max_reps = all_this_exercise.iter()
+                                .map(|t| t.reps)
+                                .max()
+                                .unwrap_or(0);
+                            (max_reps, reps >= max_reps && total_attempts > 1)
+                        };
+
+                        (sets, time, record, is_new)
                     };
 
                     let pulse_diff = pulse_after - pulse_before;
                     let pulse_indicator = if pulse_diff > 30 { "+++" } else if pulse_diff > 15 { "++" } else if pulse_diff > 0 { "+" } else { "-" };
 
                     let time_str = format_duration(total_time);
+
+                    // Different format for timed vs rep-based exercises
+                    let exercise_info = if is_timed {
+                        format!("{} - {}с", exercise_name, duration_secs)
+                    } else {
+                        format!("{} - {} повторов\nВремя: {}с", exercise_name, reps, duration_secs)
+                    };
+
+                    // Personal record info
+                    let record_info = if is_new_record {
+                        if is_timed {
+                            format!("🏆 НОВЫЙ РЕКОРД! {}с", personal_record)
+                        } else {
+                            format!("🏆 НОВЫЙ РЕКОРД! {} повторов", personal_record)
+                        }
+                    } else {
+                        if is_timed {
+                            format!("Рекорд: {}с", personal_record)
+                        } else {
+                            format!("Рекорд: {} повторов", personal_record)
+                        }
+                    };
+
                     let response = format!(
                         "Записано!\n\n\
-                        {} - {} повторов\n\
-                        Время: {}с\n\
+                        {}\n\
                         Пульс: {} -> {} ({}{}) уд/мин\n\n\
+                        {}\n\
                         Сегодня: {} подх., {}\n\n\
-                        /train - ещё",
-                        exercise_name, reps, duration_secs,
+                        📋 Команды:\n\
+                        /train - ещё упражнение\n\
+                        /stats - статистика\n\
+                        /balance - баланс мышц\n\
+                        /tip - совет",
+                        exercise_info,
                         pulse_before, pulse_after, pulse_indicator, pulse_diff,
+                        record_info,
                         today_sets, time_str
                     );
 

@@ -2,7 +2,7 @@
 
 use chrono::{Local, Utc};
 use crate::db::Training;
-use crate::exercises::{Exercise, get_base_exercises, get_all_exercises};
+use crate::exercises::{Exercise, find_exercise_by_name, get_base_exercises, get_all_exercises};
 use super::muscle_tracker::MuscleTracker;
 
 /// A recommendation with explanation
@@ -65,12 +65,27 @@ impl Recommender {
         let mut candidates: Vec<(&'static Exercise, f32, String)> = Vec::new();
 
         for exercise in exercises {
-            // Skip if done today
+            // Skip if done today (exact exercise)
             let done_today = self.trainings.iter().any(|t| {
                 t.exercise == exercise.name &&
                 t.date.with_timezone(&Local).date_naive() == today
             });
             if done_today {
+                continue;
+            }
+
+            // Skip if same category exercise was done today (e.g., both push exercises)
+            let same_category_done = self.trainings.iter().any(|t| {
+                if t.date.with_timezone(&Local).date_naive() != today {
+                    return false;
+                }
+                if let Some(done_ex) = find_exercise_by_name(&t.exercise) {
+                    done_ex.category == exercise.category
+                } else {
+                    false
+                }
+            });
+            if same_category_done {
                 continue;
             }
 

@@ -1,7 +1,7 @@
 //! Database module - SQLite storage for training data
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,22 @@ pub struct Training {
     pub pulse_after: Option<i32>,    // Heart rate after exercise
     pub notes: Option<String>,
     pub user_id: Option<i64>,        // Owner of this training record
+}
+
+/// Parse date string from database (supports RFC3339 and legacy "YYYY-MM-DD HH:MM:SS" format)
+fn parse_date(date_str: &str) -> DateTime<Utc> {
+    // Try RFC3339 first (new format with timezone)
+    if let Ok(dt) = DateTime::parse_from_rfc3339(date_str) {
+        return dt.with_timezone(&Utc);
+    }
+
+    // Try legacy format without timezone (assume UTC)
+    if let Ok(naive) = NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S") {
+        return naive.and_utc();
+    }
+
+    // Fallback to epoch (1970-01-01) for truly invalid dates
+    DateTime::UNIX_EPOCH
 }
 
 /// Database wrapper
@@ -257,9 +273,7 @@ impl Database {
             let date_str: String = row.get(1)?;
             Ok(Training {
                 id: Some(row.get(0)?),
-                date: DateTime::parse_from_rfc3339(&date_str)
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
+                date: parse_date(&date_str),
                 exercise: row.get(2)?,
                 sets: row.get(3)?,
                 reps: row.get(4)?,
@@ -285,9 +299,7 @@ impl Database {
             let date_str: String = row.get(1)?;
             Ok(Training {
                 id: Some(row.get(0)?),
-                date: DateTime::parse_from_rfc3339(&date_str)
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
+                date: parse_date(&date_str),
                 exercise: row.get(2)?,
                 sets: row.get(3)?,
                 reps: row.get(4)?,

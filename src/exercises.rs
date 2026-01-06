@@ -60,6 +60,7 @@ pub struct Exercise {
     pub category: Category,
     pub muscle_groups: &'static [MuscleGroup],
     pub is_base: bool,
+    pub is_timed: bool, // true = на время (планка), false = на повторы (отжимания)
     pub description: Option<&'static str>,
 }
 
@@ -94,6 +95,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Push,
         muscle_groups: &[MuscleGroup::Chest, MuscleGroup::Triceps, MuscleGroup::Shoulders, MuscleGroup::Core],
         is_base: true,
+        is_timed: false,
         description: None,
     },
     Exercise {
@@ -102,6 +104,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Push,
         muscle_groups: &[MuscleGroup::Chest, MuscleGroup::Triceps, MuscleGroup::Shoulders, MuscleGroup::Core],
         is_base: true,
+        is_timed: false,
         description: None,
     },
     Exercise {
@@ -110,6 +113,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Core,
         muscle_groups: &[MuscleGroup::Core],
         is_base: true,
+        is_timed: false,
         description: None,
     },
     Exercise {
@@ -118,6 +122,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Core,
         muscle_groups: &[MuscleGroup::Core, MuscleGroup::Shoulders],
         is_base: true,
+        is_timed: true,
         description: None,
     },
     Exercise {
@@ -126,6 +131,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Legs,
         muscle_groups: &[MuscleGroup::Quads, MuscleGroup::Glutes, MuscleGroup::Core, MuscleGroup::Shoulders],
         is_base: true,
+        is_timed: false,
         description: None,
     },
     Exercise {
@@ -134,29 +140,13 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         category: Category::Taiji,
         muscle_groups: &[MuscleGroup::FullBody],
         is_base: true,
+        is_timed: true,
         description: None,
     },
 ];
 
-/// Дополнительные упражнения (из книги "Сам себе тренер")
+/// Дополнительные упражнения (из книги "You Are Your Own Gym")
 pub const EXTRA_EXERCISES: &[Exercise] = &[
-    // Тайцзи
-    Exercise {
-        id: "form_24",
-        name: "форма 24",
-        category: Category::Taiji,
-        muscle_groups: &[MuscleGroup::FullBody],
-        is_base: false,
-        description: Some("Классическая форма тайцзицюань из 24 движений"),
-    },
-    Exercise {
-        id: "silk_reeling",
-        name: "чаньсыгун",
-        category: Category::Taiji,
-        muscle_groups: &[MuscleGroup::FullBody, MuscleGroup::Core],
-        is_base: false,
-        description: Some("Упражнение на спиральную силу из стиля Чэнь"),
-    },
     // Тяговые (спина, бицепс)
     Exercise {
         id: "let_me_in",
@@ -164,6 +154,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         category: Category::Pull,
         muscle_groups: &[MuscleGroup::Back, MuscleGroup::Biceps, MuscleGroup::Shoulders],
         is_base: false,
+        is_timed: false,
         description: Some("Стоя лицом к двери, держась за ручки с двух сторон. Ноги по бокам двери. Подтягивайся к двери, сгибая локти"),
     },
     Exercise {
@@ -172,6 +163,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         category: Category::Pull,
         muscle_groups: &[MuscleGroup::Biceps, MuscleGroup::Back],
         is_base: false,
+        is_timed: false,
         description: Some("Встань у полки/перил на уровне пояса. Руки ладонями вверх под выступ. Тяни вверх, наклоняясь вперёд"),
     },
     // Ноги
@@ -181,6 +173,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         category: Category::Legs,
         muscle_groups: &[MuscleGroup::Calves],
         is_base: false,
+        is_timed: false,
         description: Some("Встань на край ступеньки носками. Поднимайся на носки и опускайся ниже уровня ступени"),
     },
     Exercise {
@@ -189,6 +182,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         category: Category::Legs,
         muscle_groups: &[MuscleGroup::Hamstrings, MuscleGroup::Glutes, MuscleGroup::Core],
         is_base: false,
+        is_timed: false,
         description: Some("Стоя на одной ноге, наклоняйся вперёд, отводя другую ногу назад. Спина прямая"),
     },
 ];
