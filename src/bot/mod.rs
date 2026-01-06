@@ -15,7 +15,7 @@ use tracing::{info, error};
 
 use crate::db::{Database, Training, User};
 use crate::exercises::{get_base_exercises, find_exercise, find_exercise_by_name, EXTRA_EXERCISES};
-use crate::ml::Recommender;
+use crate::ml::{Recommender, ProgressPredictor};
 use crate::tips;
 
 /// Bot configuration
@@ -807,8 +807,8 @@ async fn handle_message(
                         user_id: Some(user_id),
                     };
 
-                    // Count today's sets, total time, and personal record
-                    let (today_sets, total_time, personal_record, is_new_record) = {
+                    // Count today's sets, total time, personal record, and ML prediction
+                    let (today_sets, total_time, personal_record, is_new_record, ml_prediction) = {
                         let db = db.lock().await;
                         db.add_training(&training, user_id)?;
 
@@ -849,7 +849,15 @@ async fn handle_message(
                             (max_reps, reps >= max_reps && total_attempts > 1)
                         };
 
-                        (sets, time, record, is_new)
+                        // ML prediction (only for rep-based exercises with enough data)
+                        let prediction = if !is_timed {
+                            ProgressPredictor::train(&trainings, &exercise_name)
+                                .map(|p| p.format_prediction())
+                        } else {
+                            None
+                        };
+
+                        (sets, time, record, is_new, prediction)
                     };
 
                     let pulse_diff = pulse_after - pulse_before;
@@ -879,12 +887,17 @@ async fn handle_message(
                         }
                     };
 
+                    // Build response with optional ML prediction
+                    let ml_section = ml_prediction
+                        .map(|p| format!("\n\n{}", p))
+                        .unwrap_or_default();
+
                     let response = format!(
                         "Записано!\n\n\
                         {}\n\
                         Пульс: {} -> {} ({}{}) уд/мин\n\n\
                         {}\n\
-                        Сегодня: {} подх., {}\n\n\
+                        Сегодня: {} подх., {}{}\n\n\
                         📋 Команды:\n\
                         /train - ещё упражнение\n\
                         /stats - статистика\n\
@@ -893,7 +906,8 @@ async fn handle_message(
                         exercise_info,
                         pulse_before, pulse_after, pulse_indicator, pulse_diff,
                         record_info,
-                        today_sets, time_str
+                        today_sets, time_str,
+                        ml_section
                     );
 
                     bot.send_message(msg.chat.id, response).await?;

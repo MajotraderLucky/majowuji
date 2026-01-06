@@ -3,13 +3,15 @@
 //! Features:
 //! - Muscle group load tracking
 //! - Exercise recommendations based on balance
-//! - Progress prediction based on historical data
+//! - Progress prediction using linear regression (linfa)
 
 pub mod muscle_tracker;
 pub mod recommender;
+pub mod predictor;
 
 pub use muscle_tracker::MuscleTracker;
 pub use recommender::Recommender;
+pub use predictor::ProgressPredictor;
 
 use crate::db::Training;
 
@@ -74,10 +76,6 @@ impl Analytics {
     }
 }
 
-// TODO: Add more sophisticated ML models when linfa is enabled
-// - Linear regression for progress prediction
-// - Clustering for workout pattern analysis
-// - Time series forecasting for performance trends
 
 #[cfg(test)]
 mod tests {

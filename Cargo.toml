@@ -34,6 +34,7 @@ tracing-subscriber = "0.3"
 dotenvy = "0.15"
 rand = "0.8"
 
-# ML (uncomment when needed)
-# linfa = "0.7"
-# linfa-linear = "0.7"
+# ML
+linfa = "0.7"
+linfa-linear = "0.7"
+ndarray = "0.15"  # Must match linfa's ndarray version
