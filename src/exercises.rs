@@ -360,6 +360,17 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         description: Some("Лёжа на животе, подними грудь, упираясь ладонями. Бёдра на полу. Держи 15-20 сек"),
         focus_cues: Some("Отталкивайся руками, раскрывай грудь. Плечи от ушей. Взгляд вперёд, шея длинная"),
     },
+    // Кардио / Full Body
+    Exercise {
+        id: "shadow_boxing",
+        name: "бой с тенью",
+        category: Category::Taiji,
+        muscle_groups: &[MuscleGroup::FullBody],
+        is_base: false,
+        is_timed: true,
+        description: Some("Имитация боя с невидимым противником. Удары, блоки, уклоны в свободном темпе"),
+        focus_cues: Some("Работай всем телом. Вращай корпус при ударах. Держи руки у подбородка. Дыши ритмично"),
+    },
 ];
 
 pub fn get_base_exercises() -> &'static [Exercise] {
@@ -434,8 +445,8 @@ mod tests {
     #[test]
     fn test_get_all_exercises_count() {
         let exercises = get_all_exercises();
-        // 6 базовых + 20 дополнительных = 26
-        assert_eq!(exercises.len(), 26);
+        // 6 базовых + 21 дополнительных = 27
+        assert_eq!(exercises.len(), 27);
     }
 
     #[test]
