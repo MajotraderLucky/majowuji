@@ -345,14 +345,32 @@ async fn handle_command(
 
                 // Show recommendation with option to choose other
                 let text = if rec.is_bonus {
-                    // Bonus exercise - show with description
-                    let desc = rec.exercise.description.unwrap_or("");
+                    // Bonus exercise - show with detailed description and focus cues
+                    let desc = rec.detailed_description
+                        .as_deref()
+                        .or(rec.exercise.description)
+                        .unwrap_or("");
+
+                    let focus = rec.focus_cues
+                        .as_deref()
+                        .or(rec.exercise.focus_cues)
+                        .map(|f| format!("\n\n🎯 Фокус: {}", f))
+                        .unwrap_or_default();
+
+                    let muscles: Vec<_> = rec.exercise.muscle_groups
+                        .iter()
+                        .map(|m| m.name_ru())
+                        .collect();
+                    let muscle_info = format!("\n\n💪 Мышцы: {}", muscles.join(", "));
+
                     format!(
-                        "🎁 Бонус! База выполнена!\n\n{} {}\n\n{}\n\n📖 {}{}\n\nВыбрать или пропустить?",
+                        "🎁 Бонус! База выполнена!\n\n{} {}\n\n{}\n\n📖 {}{}{}{}\n\nВыбрать или пропустить?",
                         rec.exercise.category.emoji(),
                         rec.exercise.name,
                         rec.reason,
                         desc,
+                        focus,
+                        muscle_info,
                         goal_info
                     )
                 } else {

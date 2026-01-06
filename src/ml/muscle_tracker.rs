@@ -156,9 +156,10 @@ mod tests {
     use super::*;
 
     fn create_training(exercise: &str, reps: i32) -> Training {
+        // Use Local time to ensure training is considered "today" in local timezone
         Training {
             id: None,
-            date: Utc::now(),
+            date: Local::now().with_timezone(&Utc),
             exercise: exercise.to_string(),
             sets: 1,
             reps,

@@ -62,6 +62,7 @@ pub struct Exercise {
     pub is_base: bool,
     pub is_timed: bool, // true = на время (планка), false = на повторы (отжимания)
     pub description: Option<&'static str>,
+    pub focus_cues: Option<&'static str>, // На что концентрироваться при выполнении
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -99,6 +100,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         is_base: true,
         is_timed: false,
         description: None,
+        focus_cues: None,
     },
     Exercise {
         id: "pushups_handles",
@@ -108,6 +110,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         is_base: true,
         is_timed: false,
         description: None,
+        focus_cues: None,
     },
     Exercise {
         id: "jackknife",
@@ -117,6 +120,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         is_base: true,
         is_timed: false,
         description: None,
+        focus_cues: None,
     },
     Exercise {
         id: "plank_elbows",
@@ -126,6 +130,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         is_base: true,
         is_timed: true,
         description: None,
+        focus_cues: None,
     },
     Exercise {
         id: "squats_strikes",
@@ -135,6 +140,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         is_base: true,
         is_timed: false,
         description: None,
+        focus_cues: None,
     },
     Exercise {
         id: "taiji_shadow",
@@ -144,6 +150,7 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         is_base: true,
         is_timed: true,
         description: None,
+        focus_cues: None,
     },
 ];
 
@@ -158,6 +165,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Стоя лицом к двери, держась за ручки с двух сторон. Ноги по бокам двери. Подтягивайся к двери, сгибая локти"),
+        focus_cues: Some("Своди лопатки в конце движения. Чувствуй растяжение широчайших при опускании. Не помогай корпусом"),
     },
     Exercise {
         id: "shelf_pullup",
@@ -167,6 +175,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Встань у полки/перил на уровне пояса. Руки ладонями вверх под выступ. Тяни вверх, наклоняясь вперёд"),
+        focus_cues: Some("Напрягай бицепсы в верхней точке. Контролируй опускание 2-3 секунды. Держи локти прижатыми к корпусу"),
     },
     // Ноги
     Exercise {
@@ -177,6 +186,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Встань на край ступеньки носками. Поднимайся на носки и опускайся ниже уровня ступени"),
+        focus_cues: Some("Максимально поднимайся на носки. Пауза 1 сек в верхней точке. Полностью растягивай икры внизу"),
     },
     Exercise {
         id: "romanian_deadlift",
@@ -186,6 +196,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Стоя на одной ноге, наклоняйся вперёд, отводя другую ногу назад. Спина прямая"),
+        focus_cues: Some("Чувствуй растяжение задней поверхности бедра. Сжимай ягодицу при подъёме. Держи спину идеально ровной"),
     },
     // === Силовые из книги (для баланса мышц) ===
     Exercise {
@@ -196,6 +207,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Шагни в сторону, согни опорную ногу до параллели бедра с полом. Вторая нога прямая. Оттолкнись и вернись"),
+        focus_cues: Some("Толкайся пяткой опорной ноги. Держи колено над стопой. Чувствуй внутреннюю поверхность бедра"),
     },
     Exercise {
         id: "star_jump",
@@ -205,6 +217,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Из глубокого приседа сумо выпрыгни вверх, раскинув руки и ноги звездой. Приземлись мягко на носки"),
+        focus_cues: Some("Взрывное отталкивание от пола. Полное раскрытие в воздухе. Мягкое приземление с амортизацией"),
     },
     Exercise {
         id: "pogo_jumps",
@@ -214,6 +227,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Прыгай на месте на носках, не сгибая колени. Пятки не касаются пола. Прыгай как можно выше и чаще"),
+        focus_cues: Some("Ноги как пружины - только голеностоп. Держи пресс напряжённым. Минимальное время контакта с полом"),
     },
     Exercise {
         id: "superman",
@@ -223,6 +237,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("Лёжа на животе, одновременно подними руки и ноги от пола. Держи позицию. Тренирует разгибатели спины"),
+        focus_cues: Some("Сжимай ягодицы. Напрягай поясницу. Тянись макушкой и пятками в разные стороны. Шея нейтральна"),
     },
     Exercise {
         id: "swimmer",
@@ -232,6 +247,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Лёжа на животе, попеременно поднимай противоположные руку и ногу, имитируя плавание"),
+        focus_cues: Some("Контролируй движение, не раскачивайся. Напрягай спину при каждом подъёме. Дыши ровно"),
     },
     Exercise {
         id: "russian_twist",
@@ -241,6 +257,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: false,
         description: Some("Сидя с поднятыми ногами, скручивай корпус из стороны в сторону, касаясь локтями коленей"),
+        focus_cues: Some("Скручивай именно корпус, не просто руки. Напрягай косые мышцы живота. Держи ноги неподвижно"),
     },
     Exercise {
         id: "side_plank",
@@ -250,6 +267,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("На боку на локте, тело прямое от головы до пяток. Держи позицию"),
+        focus_cues: Some("Не проваливай таз. Напрягай боковые мышцы живота. Плечо над локтем. Дыши спокойно"),
     },
     // === Растяжка (научно обоснованная для 40+) ===
     Exercise {
@@ -260,6 +278,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("На четвереньках, поверни корпус и подними руку к потолку. Держи 20-30 сек на каждую сторону"),
+        focus_cues: Some("Чувствуй вращение между лопатками. Взгляд за рукой. Таз неподвижен. Дыши глубоко"),
     },
     Exercise {
         id: "thread_needle",
@@ -269,6 +288,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("На четвереньках, проведи руку под корпусом, опустив плечо на пол. Держи 20-30 сек"),
+        focus_cues: Some("Расслабь плечо к полу. Чувствуй растяжение между лопаткой и позвоночником. Дыши в натяжение"),
     },
     Exercise {
         id: "child_pose",
@@ -278,6 +298,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("Сидя на пятках, вытяни руки вперёд, лоб на пол. Расслабься и дыши 30 сек"),
+        focus_cues: Some("Расслабь поясницу. Тянись руками вперёд. Отпусти напряжение с каждым выдохом"),
     },
     Exercise {
         id: "pigeon_pose",
@@ -287,6 +308,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("Одна нога согнута впереди, другая вытянута назад. Наклонись вперёд. Держи 30 сек на каждую ногу"),
+        focus_cues: Some("Чувствуй глубокое растяжение в ягодице. Опускай таз к полу. Не зажимай поясницу"),
     },
     Exercise {
         id: "figure_four_twist",
@@ -296,6 +318,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("Лёжа на спине, положи лодыжку на колено другой ноги. Опусти обе ноги в сторону. Держи 20-30 сек"),
+        focus_cues: Some("Расслабь поясницу в пол. Чувствуй растяжение в грушевидной мышце. Плечи прижаты"),
     },
     Exercise {
         id: "hip_flexor_stretch",
@@ -305,6 +328,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("Лёжа на спине, подтяни одно колено к груди, другую ногу держи прямой. Прижми поясницу к полу"),
+        focus_cues: Some("Поясница прижата к полу - это ключ. Чувствуй растяжение передней поверхности бедра прямой ноги"),
     },
     Exercise {
         id: "seated_forward_fold",
@@ -314,6 +338,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("Сидя с прямыми ногами, тянись руками к носкам. Не округляй спину. Держи 30 сек"),
+        focus_cues: Some("Наклоняйся от бёдер, не от поясницы. Тяни живот к бёдрам. Расслабь шею"),
     },
     Exercise {
         id: "happy_baby",
@@ -323,6 +348,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("Лёжа на спине, возьмись за внешние стороны стоп, колени к подмышкам. Покачивайся 30 сек"),
+        focus_cues: Some("Расслабь поясницу. Колени тяни к подмышкам. Мягко покачивайся для массажа позвоночника"),
     },
     Exercise {
         id: "cobra",
@@ -332,6 +358,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_base: false,
         is_timed: true,
         description: Some("Лёжа на животе, подними грудь, упираясь ладонями. Бёдра на полу. Держи 15-20 сек"),
+        focus_cues: Some("Отталкивайся руками, раскрывай грудь. Плечи от ушей. Взгляд вперёд, шея длинная"),
     },
 ];
 
