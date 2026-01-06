@@ -15,7 +15,6 @@ pub struct ProgressPredictor {
     slope: f64,
     intercept: f64,
     r2_score: f64,
-    exercise: String,
     data_points: usize,
     first_date: DateTime<Utc>,
 }
@@ -90,7 +89,6 @@ impl ProgressPredictor {
             slope,
             intercept,
             r2_score,
-            exercise: exercise.to_string(),
             data_points: n_samples,
             first_date,
         })
