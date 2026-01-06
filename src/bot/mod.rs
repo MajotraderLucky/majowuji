@@ -15,7 +15,7 @@ use tracing::{info, error};
 
 use crate::db::{Database, Training, User};
 use crate::exercises::{get_base_exercises, find_exercise, find_exercise_by_name, EXTRA_EXERCISES};
-use crate::ml::{Recommender, ProgressPredictor};
+use crate::ml::{Recommender, ProgressPredictor, GoalCalculator};
 use crate::tips;
 
 /// Bot configuration
@@ -335,27 +335,34 @@ async fn handle_command(
                 let db = db.lock().await;
                 db.get_trainings_for_user(user.id)?
             };
-            let recommender = Recommender::new(trainings);
+            let recommender = Recommender::new(trainings.clone());
 
             if let Some(rec) = recommender.get_recommendation() {
+                // Calculate fatigue-aware goal for the recommended exercise
+                let goal_info = GoalCalculator::calculate(&trainings, rec.exercise.name)
+                    .map(|g| format!("\n\n📊 {}", g.format_short()))
+                    .unwrap_or_default();
+
                 // Show recommendation with option to choose other
                 let text = if rec.is_bonus {
                     // Bonus exercise - show with description
                     let desc = rec.exercise.description.unwrap_or("");
                     format!(
-                        "🎁 Бонус! База выполнена!\n\n{} {}\n\n{}\n\n📖 {}\n\nВыбрать или пропустить?",
+                        "🎁 Бонус! База выполнена!\n\n{} {}\n\n{}\n\n📖 {}{}\n\nВыбрать или пропустить?",
                         rec.exercise.category.emoji(),
                         rec.exercise.name,
                         rec.reason,
-                        desc
+                        desc,
+                        goal_info
                     )
                 } else {
                     // Base exercise
                     format!(
-                        "🎯 Рекомендую: {} {}\n\n{}\n\nВыбрать рекомендованное или другое?",
+                        "🎯 Рекомендую: {} {}\n\n{}{}\n\nВыбрать рекомендованное или другое?",
                         rec.exercise.category.emoji(),
                         rec.exercise.name,
-                        rec.reason
+                        rec.reason,
+                        goal_info
                     )
                 };
                 let second_button = if rec.is_bonus {
@@ -613,18 +620,29 @@ async fn handle_callback(
                     user_id: user.id,
                 }).await?;
 
+                // Get trainings and calculate fatigue-aware goal
+                let goal_info = {
+                    let db = db.lock().await;
+                    let trainings = db.get_trainings_for_user(user.id)?;
+                    GoalCalculator::calculate(&trainings, exercise.name)
+                        .map(|g| format!("\n\n📊 Прогресс:\n{}", g.format()))
+                        .unwrap_or_default()
+                };
+
                 let text = if let Some(desc) = exercise.description {
                     format!(
-                        "{} {}\n\n📖 {}\n\nПульс до упражнения?",
+                        "{} {}\n\n📖 {}{}\n\nПульс до упражнения?",
                         exercise.category.emoji(),
                         exercise.name,
-                        desc
+                        desc,
+                        goal_info
                     )
                 } else {
                     format!(
-                        "{} {}\n\nПульс до упражнения?",
+                        "{} {}{}\n\nПульс до упражнения?",
                         exercise.category.emoji(),
-                        exercise.name
+                        exercise.name,
+                        goal_info
                     )
                 };
 
