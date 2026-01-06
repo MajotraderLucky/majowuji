@@ -72,6 +72,7 @@ pub enum Category {
     Legs,      // Ноги, приседания
     Taiji,     // Тайцзицюань
     Strikes,   // Удары
+    Stretch,   // Растяжка
 }
 
 impl Category {
@@ -83,6 +84,7 @@ impl Category {
             Category::Legs => "🦵",
             Category::Taiji => "☯",
             Category::Strikes => "👊",
+            Category::Stretch => "🧘",
         }
     }
 }
@@ -185,6 +187,152 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_timed: false,
         description: Some("Стоя на одной ноге, наклоняйся вперёд, отводя другую ногу назад. Спина прямая"),
     },
+    // === Силовые из книги (для баланса мышц) ===
+    Exercise {
+        id: "side_lunges",
+        name: "выпады в сторону",
+        category: Category::Legs,
+        muscle_groups: &[MuscleGroup::Quads, MuscleGroup::Glutes, MuscleGroup::Hamstrings],
+        is_base: false,
+        is_timed: false,
+        description: Some("Шагни в сторону, согни опорную ногу до параллели бедра с полом. Вторая нога прямая. Оттолкнись и вернись"),
+    },
+    Exercise {
+        id: "star_jump",
+        name: "прыжок-звезда",
+        category: Category::Legs,
+        muscle_groups: &[MuscleGroup::Quads, MuscleGroup::Glutes, MuscleGroup::Hamstrings, MuscleGroup::Calves],
+        is_base: false,
+        is_timed: false,
+        description: Some("Из глубокого приседа сумо выпрыгни вверх, раскинув руки и ноги звездой. Приземлись мягко на носки"),
+    },
+    Exercise {
+        id: "pogo_jumps",
+        name: "пого-прыжки",
+        category: Category::Legs,
+        muscle_groups: &[MuscleGroup::Calves],
+        is_base: false,
+        is_timed: false,
+        description: Some("Прыгай на месте на носках, не сгибая колени. Пятки не касаются пола. Прыгай как можно выше и чаще"),
+    },
+    Exercise {
+        id: "superman",
+        name: "супермен",
+        category: Category::Core,
+        muscle_groups: &[MuscleGroup::Back, MuscleGroup::Glutes, MuscleGroup::Hamstrings],
+        is_base: false,
+        is_timed: true,
+        description: Some("Лёжа на животе, одновременно подними руки и ноги от пола. Держи позицию. Тренирует разгибатели спины"),
+    },
+    Exercise {
+        id: "swimmer",
+        name: "пловец",
+        category: Category::Core,
+        muscle_groups: &[MuscleGroup::Back, MuscleGroup::Shoulders],
+        is_base: false,
+        is_timed: false,
+        description: Some("Лёжа на животе, попеременно поднимай противоположные руку и ногу, имитируя плавание"),
+    },
+    Exercise {
+        id: "russian_twist",
+        name: "русские скручивания",
+        category: Category::Core,
+        muscle_groups: &[MuscleGroup::Core],
+        is_base: false,
+        is_timed: false,
+        description: Some("Сидя с поднятыми ногами, скручивай корпус из стороны в сторону, касаясь локтями коленей"),
+    },
+    Exercise {
+        id: "side_plank",
+        name: "боковая планка",
+        category: Category::Core,
+        muscle_groups: &[MuscleGroup::Core, MuscleGroup::Shoulders],
+        is_base: false,
+        is_timed: true,
+        description: Some("На боку на локте, тело прямое от головы до пяток. Держи позицию"),
+    },
+    // === Растяжка (научно обоснованная для 40+) ===
+    Exercise {
+        id: "t_spine_rotation",
+        name: "вращение грудного отдела",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Back],
+        is_base: false,
+        is_timed: true,
+        description: Some("На четвереньках, поверни корпус и подними руку к потолку. Держи 20-30 сек на каждую сторону"),
+    },
+    Exercise {
+        id: "thread_needle",
+        name: "нить в иголку",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Shoulders, MuscleGroup::Back],
+        is_base: false,
+        is_timed: true,
+        description: Some("На четвереньках, проведи руку под корпусом, опустив плечо на пол. Держи 20-30 сек"),
+    },
+    Exercise {
+        id: "child_pose",
+        name: "поза ребёнка",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Back, MuscleGroup::Glutes],
+        is_base: false,
+        is_timed: true,
+        description: Some("Сидя на пятках, вытяни руки вперёд, лоб на пол. Расслабься и дыши 30 сек"),
+    },
+    Exercise {
+        id: "pigeon_pose",
+        name: "поза голубя",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Glutes, MuscleGroup::Hamstrings],
+        is_base: false,
+        is_timed: true,
+        description: Some("Одна нога согнута впереди, другая вытянута назад. Наклонись вперёд. Держи 30 сек на каждую ногу"),
+    },
+    Exercise {
+        id: "figure_four_twist",
+        name: "четвёрка с поворотом",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Glutes, MuscleGroup::Core],
+        is_base: false,
+        is_timed: true,
+        description: Some("Лёжа на спине, положи лодыжку на колено другой ноги. Опусти обе ноги в сторону. Держи 20-30 сек"),
+    },
+    Exercise {
+        id: "hip_flexor_stretch",
+        name: "растяжка сгибателей бедра",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Quads, MuscleGroup::Core],
+        is_base: false,
+        is_timed: true,
+        description: Some("Лёжа на спине, подтяни одно колено к груди, другую ногу держи прямой. Прижми поясницу к полу"),
+    },
+    Exercise {
+        id: "seated_forward_fold",
+        name: "складка сидя",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Hamstrings, MuscleGroup::Back],
+        is_base: false,
+        is_timed: true,
+        description: Some("Сидя с прямыми ногами, тянись руками к носкам. Не округляй спину. Держи 30 сек"),
+    },
+    Exercise {
+        id: "happy_baby",
+        name: "счастливый малыш",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Glutes, MuscleGroup::Hamstrings],
+        is_base: false,
+        is_timed: true,
+        description: Some("Лёжа на спине, возьмись за внешние стороны стоп, колени к подмышкам. Покачивайся 30 сек"),
+    },
+    Exercise {
+        id: "cobra",
+        name: "кобра",
+        category: Category::Stretch,
+        muscle_groups: &[MuscleGroup::Core, MuscleGroup::Back],
+        is_base: false,
+        is_timed: true,
+        description: Some("Лёжа на животе, подними грудь, упираясь ладонями. Бёдра на полу. Держи 15-20 сек"),
+    },
 ];
 
 pub fn get_base_exercises() -> &'static [Exercise] {
@@ -247,6 +395,7 @@ mod tests {
         assert!(!Category::Legs.emoji().is_empty());
         assert!(!Category::Taiji.emoji().is_empty());
         assert!(!Category::Strikes.emoji().is_empty());
+        assert!(!Category::Stretch.emoji().is_empty());
     }
 
     #[test]
@@ -258,8 +407,8 @@ mod tests {
     #[test]
     fn test_get_all_exercises_count() {
         let exercises = get_all_exercises();
-        // 6 базовых + 4 дополнительных = 10
-        assert_eq!(exercises.len(), 10);
+        // 6 базовых + 20 дополнительных = 26
+        assert_eq!(exercises.len(), 26);
     }
 
     #[test]
