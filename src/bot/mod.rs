@@ -383,20 +383,40 @@ async fn handle_command(
                         goal_info
                     )
                 };
-                let second_button = if rec.is_bonus {
-                    InlineKeyboardButton::callback("Пропустить", "skip_bonus")
+                let keyboard = if rec.is_bonus {
+                    // Bonus exercise: main button + optional shadow boxing + skip
+                    let mut rows = vec![
+                        vec![
+                            InlineKeyboardButton::callback(
+                                format!("✓ {}", rec.exercise.name),
+                                format!("ex:{}", rec.exercise.id)
+                            ),
+                        ],
+                    ];
+                    // Add shadow boxing button if recommended something else
+                    if rec.exercise.id != "shadow_boxing" {
+                        rows.push(vec![
+                            InlineKeyboardButton::callback("☯ бой с тенью", "ex:shadow_boxing")
+                        ]);
+                    }
+                    rows.push(vec![
+                        InlineKeyboardButton::callback("Пропустить", "skip_bonus")
+                    ]);
+                    InlineKeyboardMarkup::new(rows)
                 } else {
-                    InlineKeyboardButton::callback("Выбрать другое", "show_all")
+                    // Base exercise: main button + choose another
+                    InlineKeyboardMarkup::new(vec![
+                        vec![
+                            InlineKeyboardButton::callback(
+                                format!("✓ {}", rec.exercise.name),
+                                format!("ex:{}", rec.exercise.id)
+                            ),
+                        ],
+                        vec![
+                            InlineKeyboardButton::callback("Выбрать другое", "show_all")
+                        ],
+                    ])
                 };
-                let keyboard = InlineKeyboardMarkup::new(vec![
-                    vec![
-                        InlineKeyboardButton::callback(
-                            format!("✓ {}", rec.exercise.name),
-                            format!("ex:{}", rec.exercise.id)
-                        ),
-                    ],
-                    vec![second_button],
-                ]);
                 bot.send_message(msg.chat.id, text)
                     .reply_markup(keyboard)
                     .await?;
