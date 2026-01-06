@@ -221,6 +221,37 @@ impl Recommender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exercises::Category;
+
+    fn create_training(exercise: &str, reps: i32) -> Training {
+        Training {
+            id: None,
+            date: Utc::now(),
+            exercise: exercise.to_string(),
+            sets: 1,
+            reps,
+            duration_secs: None,
+            pulse_before: None,
+            pulse_after: None,
+            notes: None,
+            user_id: None,
+        }
+    }
+
+    fn create_training_hours_ago(exercise: &str, reps: i32, hours_ago: i64) -> Training {
+        Training {
+            id: None,
+            date: Utc::now() - chrono::Duration::hours(hours_ago),
+            exercise: exercise.to_string(),
+            sets: 1,
+            reps,
+            duration_secs: None,
+            pulse_before: None,
+            pulse_after: None,
+            notes: None,
+            user_id: None,
+        }
+    }
 
     #[test]
     fn test_empty_recommender() {
@@ -228,5 +259,145 @@ mod tests {
         // Should recommend something even with no history
         let rec = recommender.get_recommendation();
         assert!(rec.is_some());
+    }
+
+    #[test]
+    fn test_recommendation_is_base_exercise() {
+        let recommender = Recommender::new(vec![]);
+        let rec = recommender.get_recommendation().unwrap();
+        // Without history, should recommend a base exercise
+        assert!(rec.exercise.is_base);
+        assert!(!rec.is_bonus);
+    }
+
+    #[test]
+    fn test_skip_done_today() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20),
+        ];
+        let recommender = Recommender::new(trainings);
+        let rec = recommender.get_recommendation().unwrap();
+
+        // Should not recommend the same exercise done today
+        assert_ne!(rec.exercise.name, "отжимания на кулаках");
+    }
+
+    #[test]
+    fn test_skip_same_category_today() {
+        // If pushups on fists done today, should not recommend pushups with handles
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20),
+        ];
+        let recommender = Recommender::new(trainings);
+        let rec = recommender.get_recommendation().unwrap();
+
+        // Should not recommend another Push exercise
+        assert_ne!(rec.exercise.category, Category::Push,
+            "Should not recommend {} (Push category) when pushups already done", rec.exercise.name);
+    }
+
+    #[test]
+    fn test_hours_since_never_done() {
+        let recommender = Recommender::new(vec![]);
+        let hours = recommender.hours_since_exercise("отжимания на кулаках");
+        assert_eq!(hours, f32::MAX);
+    }
+
+    #[test]
+    fn test_hours_since_recently_done() {
+        let trainings = vec![
+            create_training_hours_ago("отжимания на кулаках", 20, 2),
+        ];
+        let recommender = Recommender::new(trainings);
+        let hours = recommender.hours_since_exercise("отжимания на кулаках");
+
+        // Should be approximately 2 hours
+        assert!(hours > 1.9 && hours < 2.1, "Expected ~2 hours, got {}", hours);
+    }
+
+    #[test]
+    fn test_rest_time_enforcement() {
+        // Exercise done 30 minutes ago - should be skipped
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20),
+        ];
+        let recommender = Recommender::new(trainings);
+        let rec = recommender.get_recommendation().unwrap();
+
+        // Recent exercise should not be recommended
+        assert_ne!(rec.exercise.name, "отжимания на кулаках",
+            "Exercise done < 1 hour ago should not be recommended");
+    }
+
+    #[test]
+    fn test_recommendation_has_reason() {
+        let recommender = Recommender::new(vec![]);
+        let rec = recommender.get_recommendation().unwrap();
+        assert!(!rec.reason.is_empty());
+    }
+
+    #[test]
+    fn test_recommendation_has_confidence() {
+        let recommender = Recommender::new(vec![]);
+        let rec = recommender.get_recommendation().unwrap();
+        assert!(rec.confidence > 0.0);
+    }
+
+    #[test]
+    fn test_balance_score_passthrough() {
+        let recommender = Recommender::new(vec![]);
+        let score = recommender.get_balance_score();
+        // Empty history = 0% balance
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_balance_report_format() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 30),
+        ];
+        let recommender = Recommender::new(trainings);
+        let report = recommender.get_balance_report();
+
+        // Report should contain balance percentage
+        assert!(report.contains("Баланс за неделю:"));
+        assert!(report.contains("%"));
+
+        // Should contain muscle group data
+        assert!(report.contains("повторов"));
+    }
+
+    #[test]
+    fn test_balance_report_shows_underworked() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 30),
+        ];
+        let recommender = Recommender::new(trainings);
+        let report = recommender.get_balance_report();
+
+        // Non-trained muscles should show "нужно больше"
+        assert!(report.contains("нужно больше"),
+            "Underworked muscles should be indicated");
+    }
+
+    #[test]
+    fn test_tracker_accessor() {
+        let recommender = Recommender::new(vec![]);
+        let tracker = recommender.tracker();
+        // Should return valid tracker reference
+        assert_eq!(tracker.get_balance_score(), 0.0);
+    }
+
+    #[test]
+    fn test_base_program_not_done_with_partial() {
+        // Only one exercise done - base program not complete
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20),
+        ];
+        let recommender = Recommender::new(trainings);
+        let rec = recommender.get_recommendation().unwrap();
+
+        // Should still recommend base exercises, not bonus
+        assert!(!rec.is_bonus);
     }
 }

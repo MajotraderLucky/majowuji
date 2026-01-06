@@ -155,10 +155,241 @@ impl MuscleTracker {
 mod tests {
     use super::*;
 
+    fn create_training(exercise: &str, reps: i32) -> Training {
+        Training {
+            id: None,
+            date: Utc::now(),
+            exercise: exercise.to_string(),
+            sets: 1,
+            reps,
+            duration_secs: None,
+            pulse_before: None,
+            pulse_after: None,
+            notes: None,
+            user_id: None,
+        }
+    }
+
+    fn create_training_days_ago(exercise: &str, reps: i32, days_ago: i64) -> Training {
+        Training {
+            id: None,
+            date: Utc::now() - chrono::Duration::days(days_ago),
+            exercise: exercise.to_string(),
+            sets: 1,
+            reps,
+            duration_secs: None,
+            pulse_before: None,
+            pulse_after: None,
+            notes: None,
+            user_id: None,
+        }
+    }
+
     #[test]
     fn test_empty_tracker() {
         let tracker = MuscleTracker::from_trainings(&[]);
         assert_eq!(tracker.get_balance_score(), 0.0);
         assert_eq!(tracker.get_underworked_groups(3).len(), 3);
+    }
+
+    #[test]
+    fn test_single_training_load() {
+        let trainings = vec![create_training("отжимания на кулаках", 20)];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+
+        // Pushups target Chest, Triceps, Shoulders, Core
+        let chest = tracker.get_load(&MuscleGroup::Chest).unwrap();
+        assert_eq!(chest.today_volume, 20);
+        assert_eq!(chest.week_volume, 20);
+        assert!(chest.last_trained.is_some());
+    }
+
+    #[test]
+    fn test_multi_muscle_exercise() {
+        let trainings = vec![create_training("отжимания на кулаках", 15)];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+
+        // All target muscles should have the same volume
+        assert_eq!(tracker.get_load(&MuscleGroup::Chest).unwrap().today_volume, 15);
+        assert_eq!(tracker.get_load(&MuscleGroup::Triceps).unwrap().today_volume, 15);
+        assert_eq!(tracker.get_load(&MuscleGroup::Shoulders).unwrap().today_volume, 15);
+        assert_eq!(tracker.get_load(&MuscleGroup::Core).unwrap().today_volume, 15);
+
+        // Non-target muscles should be zero
+        assert_eq!(tracker.get_load(&MuscleGroup::Back).unwrap().today_volume, 0);
+        assert_eq!(tracker.get_load(&MuscleGroup::Biceps).unwrap().today_volume, 0);
+    }
+
+    #[test]
+    fn test_get_underworked_groups() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 50),
+        ];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+
+        // Underworked groups should NOT include muscles that were exercised
+        // Pushups target: Chest, Triceps, Shoulders, Core
+        let underworked = tracker.get_underworked_groups(5);
+        assert!(!underworked.contains(&MuscleGroup::Chest),
+            "Chest should not be underworked after pushups");
+        assert!(!underworked.contains(&MuscleGroup::Triceps),
+            "Triceps should not be underworked after pushups");
+
+        // At least Back should be in underworked (has 0 volume)
+        assert!(underworked.contains(&MuscleGroup::Back),
+            "Back should be underworked (0 volume)");
+
+        // All returned groups should have 0 today_volume
+        for group in &underworked {
+            let load = tracker.get_load(group).unwrap();
+            assert_eq!(load.today_volume, 0,
+                "Underworked group {:?} should have 0 volume", group);
+        }
+    }
+
+    #[test]
+    fn test_underworked_excludes_fullbody() {
+        let tracker = MuscleTracker::from_trainings(&[]);
+        let underworked = tracker.get_underworked_groups(15);
+        assert!(!underworked.contains(&MuscleGroup::FullBody));
+    }
+
+    #[test]
+    fn test_balance_score_zero_when_empty() {
+        let tracker = MuscleTracker::from_trainings(&[]);
+        assert_eq!(tracker.get_balance_score(), 0.0);
+    }
+
+    #[test]
+    fn test_balance_score_increases_with_variety() {
+        // Only pushups - imbalanced
+        let pushup_only = vec![create_training("отжимания на кулаках", 50)];
+        let tracker1 = MuscleTracker::from_trainings(&pushup_only);
+        let score1 = tracker1.get_balance_score();
+
+        // Add some leg work - more balanced
+        let mixed = vec![
+            create_training("отжимания на кулаках", 50),
+            create_training("приседания с ударами", 30),
+        ];
+        let tracker2 = MuscleTracker::from_trainings(&mixed);
+        let score2 = tracker2.get_balance_score();
+
+        assert!(score2 > score1, "More variety should increase balance: {} > {}", score2, score1);
+    }
+
+    #[test]
+    fn test_weekly_report_format() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 30),
+            create_training("приседания с ударами", 20),
+        ];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+        let report = tracker.get_weekly_report();
+
+        // Report should have entries for all muscle groups except FullBody
+        assert_eq!(report.len(), 10); // 11 groups - FullBody
+
+        // Each entry is (MuscleGroup, volume, bar_string)
+        for (group, _volume, bar) in &report {
+            assert_ne!(*group, MuscleGroup::FullBody);
+            assert!(bar.starts_with('['));
+            assert!(bar.ends_with(']'));
+        }
+    }
+
+    #[test]
+    fn test_weekly_report_sorted_by_volume() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 50),
+        ];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+        let report = tracker.get_weekly_report();
+
+        // Should be sorted by volume descending
+        let volumes: Vec<i32> = report.iter().map(|(_, v, _)| *v).collect();
+        let mut sorted = volumes.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(volumes, sorted);
+    }
+
+    #[test]
+    fn test_get_loads_sorted_ascending() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 30),
+        ];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+        let sorted = tracker.get_loads_sorted();
+
+        // Sorted by today_volume ascending (least worked first)
+        let volumes: Vec<i32> = sorted.iter().map(|l| l.today_volume).collect();
+        let mut expected = volumes.clone();
+        expected.sort();
+        assert_eq!(volumes, expected);
+    }
+
+    #[test]
+    fn test_unknown_exercise_skipped() {
+        let trainings = vec![
+            create_training("несуществующее упражнение", 100),
+        ];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+
+        // All muscle groups should have zero volume
+        for group in MuscleGroup::all() {
+            let load = tracker.get_load(group).unwrap();
+            assert_eq!(load.today_volume, 0, "Unknown exercise should be skipped");
+        }
+    }
+
+    #[test]
+    fn test_today_vs_week_volume() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20),           // today
+            create_training_days_ago("отжимания на кулаках", 30, 3), // 3 days ago
+        ];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+
+        let chest = tracker.get_load(&MuscleGroup::Chest).unwrap();
+        assert_eq!(chest.today_volume, 20);
+        assert_eq!(chest.week_volume, 50); // 20 + 30
+    }
+
+    #[test]
+    fn test_old_training_excluded_from_week() {
+        let trainings = vec![
+            create_training_days_ago("отжимания на кулаках", 100, 10), // 10 days ago
+        ];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+
+        let chest = tracker.get_load(&MuscleGroup::Chest).unwrap();
+        assert_eq!(chest.today_volume, 0);
+        assert_eq!(chest.week_volume, 0); // Too old
+    }
+
+    #[test]
+    fn test_last_trained_updates() {
+        let trainings = vec![
+            create_training_days_ago("отжимания на кулаках", 10, 2),
+            create_training("отжимания на кулаках", 20), // More recent
+        ];
+        let tracker = MuscleTracker::from_trainings(&trainings);
+
+        let chest = tracker.get_load(&MuscleGroup::Chest).unwrap();
+        assert!(chest.last_trained.is_some());
+
+        // Last trained should be the most recent (today)
+        let now = Utc::now();
+        let diff = now - chest.last_trained.unwrap();
+        assert!(diff.num_seconds() < 60, "Last trained should be recent");
+    }
+
+    #[test]
+    fn test_get_load_returns_none_for_invalid_group() {
+        let tracker = MuscleTracker::from_trainings(&[]);
+        // All valid groups should return Some
+        for group in MuscleGroup::all() {
+            assert!(tracker.get_load(group).is_some());
+        }
     }
 }

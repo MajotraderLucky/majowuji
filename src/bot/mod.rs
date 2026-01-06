@@ -933,3 +933,63 @@ async fn handle_message(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_moscow_tz_offset() {
+        let tz = moscow_tz();
+        // Moscow is UTC+3 = 3 * 3600 = 10800 seconds
+        assert_eq!(tz.local_minus_utc(), 10800);
+    }
+
+    #[test]
+    fn test_format_duration_seconds() {
+        assert_eq!(format_duration(5), "5с");
+        assert_eq!(format_duration(30), "30с");
+        assert_eq!(format_duration(59), "59с");
+    }
+
+    #[test]
+    fn test_format_duration_minutes() {
+        assert_eq!(format_duration(60), "1м 0с");
+        assert_eq!(format_duration(90), "1м 30с");
+        assert_eq!(format_duration(125), "2м 5с");
+        assert_eq!(format_duration(3599), "59м 59с");
+    }
+
+    #[test]
+    fn test_format_duration_hours() {
+        assert_eq!(format_duration(3600), "1ч 0м");
+        assert_eq!(format_duration(3660), "1ч 1м");
+        assert_eq!(format_duration(7200), "2ч 0м");
+        assert_eq!(format_duration(7260), "2ч 1м");
+    }
+
+    #[test]
+    fn test_format_duration_zero() {
+        assert_eq!(format_duration(0), "0с");
+    }
+
+    #[test]
+    fn test_reminder_interval_constant() {
+        // 1 hour = 3600 seconds
+        assert_eq!(REMINDER_INTERVAL_SECS, 3600);
+    }
+
+    #[test]
+    fn test_moscow_offset_constant() {
+        // UTC+3 = 3 * 3600 = 10800
+        assert_eq!(MOSCOW_OFFSET_SECS, 10800);
+    }
+
+    #[test]
+    fn test_bot_config_default() {
+        // Note: this test may fail if MAX_USERS env var is set
+        // Default max_users should be 10
+        let config = BotConfig::default();
+        assert_eq!(config.max_users, 10);
+    }
+}

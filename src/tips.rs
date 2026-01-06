@@ -2,7 +2,7 @@
 
 use rand::seq::SliceRandom;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TipCategory {
     Motivation,    // Мотивация
     Nutrition,     // Питание
@@ -186,4 +186,113 @@ pub fn format_tip(tip: &Tip) -> String {
         tip.category.name(),
         tip.text
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tip_category_emoji_all_categories() {
+        assert!(!TipCategory::Motivation.emoji().is_empty());
+        assert!(!TipCategory::Nutrition.emoji().is_empty());
+        assert!(!TipCategory::Training.emoji().is_empty());
+        assert!(!TipCategory::Technique.emoji().is_empty());
+        assert!(!TipCategory::Recovery.emoji().is_empty());
+    }
+
+    #[test]
+    fn test_tip_category_name_all_categories() {
+        assert_eq!(TipCategory::Motivation.name(), "Мотивация");
+        assert_eq!(TipCategory::Nutrition.name(), "Питание");
+        assert_eq!(TipCategory::Training.name(), "Тренировка");
+        assert_eq!(TipCategory::Technique.name(), "Техника");
+        assert_eq!(TipCategory::Recovery.name(), "Восстановление");
+    }
+
+    #[test]
+    fn test_tips_not_empty() {
+        assert!(!TIPS.is_empty());
+        // Должно быть минимум 20 советов
+        assert!(TIPS.len() >= 20, "Expected at least 20 tips, got {}", TIPS.len());
+    }
+
+    #[test]
+    fn test_tips_count() {
+        // 29 советов
+        assert_eq!(TIPS.len(), 29);
+    }
+
+    #[test]
+    fn test_get_random_tip_never_panics() {
+        // Вызываем несколько раз, не должно паниковать
+        for _ in 0..10 {
+            let tip = get_random_tip();
+            assert!(!tip.text.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_get_random_tip_by_category_returns_correct_category() {
+        // Проверяем каждую категорию
+        for category in [
+            TipCategory::Motivation,
+            TipCategory::Nutrition,
+            TipCategory::Training,
+            TipCategory::Technique,
+            TipCategory::Recovery,
+        ] {
+            let tip = get_random_tip_by_category(category);
+            assert!(tip.is_some(), "Category {:?} should have tips", category);
+            assert_eq!(tip.unwrap().category, category);
+        }
+    }
+
+    #[test]
+    fn test_format_tip_contains_emoji() {
+        let tip = &TIPS[0];
+        let formatted = format_tip(tip);
+        assert!(formatted.contains(tip.category.emoji()));
+    }
+
+    #[test]
+    fn test_format_tip_contains_category_name() {
+        let tip = &TIPS[0];
+        let formatted = format_tip(tip);
+        assert!(formatted.contains(tip.category.name()));
+    }
+
+    #[test]
+    fn test_format_tip_contains_text() {
+        let tip = &TIPS[0];
+        let formatted = format_tip(tip);
+        assert!(formatted.contains(tip.text));
+    }
+
+    #[test]
+    fn test_all_tips_have_non_empty_text() {
+        for (i, tip) in TIPS.iter().enumerate() {
+            assert!(!tip.text.is_empty(), "Tip {} has empty text", i);
+        }
+    }
+
+    #[test]
+    fn test_tips_distribution_by_category() {
+        // Проверяем, что в каждой категории есть советы
+        let mut counts = std::collections::HashMap::new();
+        for tip in TIPS.iter() {
+            *counts.entry(tip.category).or_insert(0) += 1;
+        }
+
+        assert!(counts.get(&TipCategory::Motivation).unwrap_or(&0) >= &3,
+            "Motivation should have at least 3 tips");
+        assert!(counts.get(&TipCategory::Nutrition).unwrap_or(&0) >= &3,
+            "Nutrition should have at least 3 tips");
+        assert!(counts.get(&TipCategory::Training).unwrap_or(&0) >= &3,
+            "Training should have at least 3 tips");
+        assert!(counts.get(&TipCategory::Technique).unwrap_or(&0) >= &3,
+            "Technique should have at least 3 tips");
+        assert!(counts.get(&TipCategory::Recovery).unwrap_or(&0) >= &3,
+            "Recovery should have at least 3 tips");
+    }
 }
