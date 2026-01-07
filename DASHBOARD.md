@@ -95,7 +95,11 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 | Add exercises for all 11 muscle groups | [+] Done    |
 | Bonus exercises with descriptions      | [+] Done    |
 | Book exercises selection button        | [+] Done    |
+| Shadow boxing quick-select button      | [+] Done    |
+| Fix flaky test (deterministic sorting) | [+] Done    |
+| BUG: No confirmation after pulse entry | [+] Closed  |
 | Add TUI progress charts                | [ ] Next    |
+| Add error logging to bot               | [ ] Backlog |
 | ML load prediction based on pulse      | [ ] Backlog |
 
 ## Quick Commands
