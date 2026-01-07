@@ -4,10 +4,9 @@
 
 | Component           | Status       | Progress |
 |---------------------|--------------|----------|
-| CLI                 | [+] Ready    | 100%     |
-| SQLite Storage      | [+] Ready    | 100%     |
-| TUI Dashboard       | [~] Basic    | 40%      |
 | Telegram Bot        | [+] Deployed | 100%     |
+| SQLite Storage      | [+] Ready    | 100%     |
+| CLI                 | [+] Ready    | 100%     |
 | Hourly Reminders    | [+] Working  | 100%     |
 | Duration Tracking   | [+] Working  | 100%     |
 | Pulse Tracking      | [+] Working  | 100%     |
@@ -16,7 +15,6 @@
 | Muscle Balance      | [+] Working  | 100%     |
 | Multi-user Support  | [+] Working  | 100%     |
 | Command Buttons     | [+] Working  | 100%     |
-| Charts/Graphs       | [ ] Planned  | 0%       |
 
 ## Training Program
 
@@ -50,96 +48,54 @@ Book location: `docs/you-are-your-own-gym.txt`
 - [+] Project scaffolding
 - [+] CLI with basic commands
 - [+] SQLite database
-- [+] Basic TUI view
-- [ ] Improve TUI with charts
+- [+] Telegram bot deployed
 
-### Phase 2: Analytics
+### Phase 2: Analytics [DONE]
 - [+] Duration tracking per exercise
 - [+] Pulse tracking (before/after)
-- [ ] Progress graphs (sparklines)
-- [ ] Weekly/monthly summaries
-- [ ] Exercise volume tracking
-- [ ] Personal records (PR) tracking
+- [+] Exercise volume tracking
+- [+] Inline command buttons
 
-### Phase 3: Intelligence [CURRENT]
+### Phase 3: Intelligence [DONE]
 - [+] Muscle group tracking (11 groups)
 - [+] Exercise recommendations by balance
 - [+] /balance command (weekly report)
-- [ ] ML-based load prediction
-- [ ] Recovery recommendations based on pulse
-- [ ] Pattern recognition
+- [+] Book exercises with descriptions
 
-### Phase 4: Integration
+### Phase 4: Integration [DONE]
 - [+] Telegram bot with DB
 - [+] Hourly reminders (systemd on archbook)
-- [ ] Export to JSON/CSV
-- [ ] Sync between devices
+- [+] Multi-user support (10 users)
 
 See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 
-## Current Sprint
+## Backlog
 
-| Task                                   | Status      |
-|----------------------------------------|-------------|
-| Test logging functionality             | [+] Done    |
-| Add book to docs                       | [+] Done    |
-| Create dashboard                       | [+] Done    |
-| Deploy Telegram bot to archbook        | [+] Done    |
-| Add hourly reminders                   | [+] Done    |
-| Simplify input (just reps)             | [+] Done    |
-| Add duration tracking                  | [+] Done    |
-| Add pulse tracking (HR before/after)   | [+] Done    |
-| Add muscle group tracking (11)         | [+] Done    |
-| Add ML recommendations in /train       | [+] Done    |
-| Add /balance command                   | [+] Done    |
-| Multi-user support (10 users limit)    | [+] Done    |
-| Add exercises for all 11 muscle groups | [+] Done    |
-| Bonus exercises with descriptions      | [+] Done    |
-| Book exercises selection button        | [+] Done    |
-| Shadow boxing quick-select button      | [+] Done    |
-| Fix flaky test (deterministic sorting) | [+] Done    |
-| BUG: No confirmation after pulse entry | [+] Closed  |
-| Fix timed goal display (show minutes)  | [+] Done    |
-| Fix base exercise category filtering   | [+] Done    |
-| Add inline command buttons             | [+] Done    |
-| Manual input for timed exercises       | [+] Done    |
-| Add TUI progress charts                | [ ] Next    |
-| Add error logging to bot               | [ ] Backlog |
-| ML load prediction based on pulse      | [ ] Backlog |
+| Task                           | Priority |
+|--------------------------------|----------|
+| Add error logging to bot       | Low      |
+| Weekly/monthly summary reports | Low      |
+| Personal records tracking      | Low      |
 
-## Quick Commands
+## Telegram Commands
 
-### CLI
-```bash
-# Log training
-majowuji log jab -s 3 -r 50 -n "Notes here"
-
-# View history
-majowuji list
-
-# Statistics
-majowuji stats
-majowuji stats jab
-
-# TUI dashboard
-majowuji tui
-```
-
-### Telegram Bot
 ```
 /train   - выбрать упражнение (с рекомендацией)
 /today   - сегодняшние тренировки
 /stats   - статистика
 /balance - баланс нагрузки по группам мышц
+/tip     - совет из книги
 /remind  - напоминания раз в час
 /stop    - выключить напоминания
 ```
 
+После каждого сообщения бота доступны inline-кнопки для быстрого доступа к командам.
+
 ## Notes
 
-- Database file: `majowuji.db` (auto-created)
-- Config: planned for `~/.config/majowuji/`
-- Telegram token: set via `TELOXIDE_TOKEN` env var
+- Database: `majowuji.db` (SQLite, auto-created)
+- Telegram token: `TELOXIDE_TOKEN` env var
+- Max users: `MAX_USERS` env var (default: 10)
 
 ## ML Data Collection
 
@@ -204,7 +160,3 @@ Exercises from "Сам себе тренер" (You Are Your Own Gym) are offered
 | Data separation     | Each user sees only their own trainings/stats      |
 | Access control      | New users after limit get prompt to message owner  |
 | Message forwarding  | Messages from blocked users forwarded to owner     |
-
-**Environment Variables:**
-- `MAX_USERS` - Maximum allowed users (default: 10)
-- `TELOXIDE_TOKEN` - Telegram bot token
