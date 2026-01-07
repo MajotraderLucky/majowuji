@@ -15,6 +15,7 @@
 | Book Exercises      | [+] Working  | 100%     |
 | Muscle Balance      | [+] Working  | 100%     |
 | Multi-user Support  | [+] Working  | 100%     |
+| Command Buttons     | [+] Working  | 100%     |
 | Charts/Graphs       | [ ] Planned  | 0%       |
 
 ## Training Program
@@ -98,6 +99,10 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 | Shadow boxing quick-select button      | [+] Done    |
 | Fix flaky test (deterministic sorting) | [+] Done    |
 | BUG: No confirmation after pulse entry | [+] Closed  |
+| Fix timed goal display (show minutes)  | [+] Done    |
+| Fix base exercise category filtering   | [+] Done    |
+| Add inline command buttons             | [+] Done    |
+| Manual input for timed exercises       | [+] Done    |
 | Add TUI progress charts                | [ ] Next    |
 | Add error logging to bot               | [ ] Backlog |
 | ML load prediction based on pulse      | [ ] Backlog |

@@ -794,17 +794,48 @@ async fn handle_callback(
                         let week_time: i32 = week_trainings.iter().filter_map(|t| t.duration_secs).sum();
                         let month_time: i32 = month_trainings.iter().filter_map(|t| t.duration_secs).sum();
 
-                        let text = format!(
+                        let mut text = format!(
                             "📈 Статистика\n\n\
                             Всего: {} подх.\n\
                             Сегодня: {} ({})\n\
                             Неделя: {} ({})\n\
-                            Месяц: {} ({})",
+                            Месяц: {} ({})\n",
                             total,
                             today_trainings.len(), format_duration(today_time),
                             week_trainings.len(), format_duration(week_time),
                             month_trainings.len(), format_duration(month_time)
                         );
+
+                        // Group today's trainings by exercise
+                        if !today_trainings.is_empty() {
+                            text.push_str("\n📊 Сегодня:\n");
+                            let mut exercise_stats: std::collections::HashMap<&str, (usize, i32, i32, i32)> = std::collections::HashMap::new();
+                            for t in &today_trainings {
+                                let duration = t.duration_secs.unwrap_or(0);
+                                let entry = exercise_stats.entry(&t.exercise).or_insert((0, 0, 0, 0));
+                                entry.0 += 1;
+                                entry.1 += t.reps;
+                                entry.2 += duration;
+                                entry.3 = entry.3.max(duration);
+                            }
+                            for (exercise, (sets, reps, total_time, max_time)) in exercise_stats {
+                                let is_timed = find_exercise_by_name(exercise)
+                                    .map(|ex| ex.is_timed)
+                                    .unwrap_or(false);
+                                if is_timed {
+                                    text.push_str(&format!(
+                                        "• {} - {} подх., макс. {}с, всего {}\n",
+                                        exercise, sets, max_time, format_duration(total_time)
+                                    ));
+                                } else {
+                                    text.push_str(&format!(
+                                        "• {} - {} подх., {} повт., {}\n",
+                                        exercise, sets, reps, format_duration(total_time)
+                                    ));
+                                }
+                            }
+                        }
+
                         bot.send_message(chat_id_tg, text)
                             .reply_markup(make_commands_keyboard())
                             .await?;
