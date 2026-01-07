@@ -950,7 +950,7 @@ async fn handle_message(
 
                     let response = if is_timed {
                         format!(
-                            "Пульс: {} уд/мин\n\nВыполняй {}!\n\n⏱ Таймер запущен. Напиши что угодно когда закончишь",
+                            "Пульс: {} уд/мин\n\nВыполняй {}!\n\nСколько секунд продержался?",
                             pulse, exercise_name
                         )
                     } else {
@@ -974,27 +974,31 @@ async fn handle_message(
                     .unwrap_or(false);
 
                 if is_timed {
-                    // For timed exercises: accept ANY message, calculate duration automatically
-                    let now = Utc::now();
-                    let elapsed = (now - start_time).num_seconds() as i32;
-                    // Subtract 5 seconds for preparation time, minimum 1 second
-                    let duration_secs = (elapsed - 5).max(1);
-                    let reps = 1;
+                    // For timed exercises: user enters actual hold time in seconds
+                    if let Ok(duration_secs) = text.trim().parse::<i32>() {
+                        if duration_secs < 1 || duration_secs > 3600 {
+                            bot.send_message(msg.chat.id, "Введи время от 1 до 3600 секунд").await?;
+                            return Ok(());
+                        }
+                        let reps = 1;
 
-                    dialogue.update(State::WaitingForPulseAfter {
-                        exercise_id,
-                        exercise_name: exercise_name.clone(),
-                        pulse_before,
-                        reps,
-                        duration_secs,
-                        user_id,
-                    }).await?;
+                        dialogue.update(State::WaitingForPulseAfter {
+                            exercise_id,
+                            exercise_name: exercise_name.clone(),
+                            pulse_before,
+                            reps,
+                            duration_secs,
+                            user_id,
+                        }).await?;
 
-                    let response = format!(
-                        "⏱ {} - {}с\n\nПульс после упражнения?",
-                        exercise_name, duration_secs
-                    );
-                    bot.send_message(msg.chat.id, response).await?;
+                        let response = format!(
+                            "⏱ {} - {}с\n\nПульс после упражнения?",
+                            exercise_name, duration_secs
+                        );
+                        bot.send_message(msg.chat.id, response).await?;
+                    } else {
+                        bot.send_message(msg.chat.id, "Введи число секунд").await?;
+                    }
                 } else {
                     // For rep-based exercises: require a number
                     if let Ok(reps) = text.trim().parse::<i32>() {
