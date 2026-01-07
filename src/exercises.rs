@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Muscle groups for tracking training balance
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MuscleGroup {
     Chest,      // Грудные
     Shoulders,  // Плечи (дельты)

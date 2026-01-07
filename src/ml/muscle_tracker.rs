@@ -76,9 +76,10 @@ impl MuscleTracker {
     }
 
     /// Get all loads sorted by today's volume (ascending = least worked first)
+    /// Secondary sort by MuscleGroup for deterministic ordering
     pub fn get_loads_sorted(&self) -> Vec<&MuscleLoad> {
         let mut loads: Vec<_> = self.loads.values().collect();
-        loads.sort_by_key(|l| l.today_volume);
+        loads.sort_by_key(|l| (l.today_volume, l.group));
         loads
     }
 
