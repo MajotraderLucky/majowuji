@@ -136,6 +136,20 @@ fn make_exercises_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(buttons)
 }
 
+/// Create inline keyboard with main command buttons
+fn make_commands_keyboard() -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback("🎯 Тренировка", "cmd:train"),
+            InlineKeyboardButton::callback("📊 Статистика", "cmd:stats"),
+        ],
+        vec![
+            InlineKeyboardButton::callback("🏋️ Баланс", "cmd:balance"),
+            InlineKeyboardButton::callback("📖 Совет", "cmd:tip"),
+        ],
+    ])
+}
+
 /// Create inline keyboard with extra exercises from the book
 fn make_extra_exercises_keyboard() -> InlineKeyboardMarkup {
     let mut buttons: Vec<Vec<InlineKeyboardButton>> = EXTRA_EXERCISES
@@ -440,7 +454,8 @@ async fn handle_command(
                 .collect();
 
             if today_trainings.is_empty() {
-                bot.send_message(msg.chat.id, "Сегодня ещё не было тренировок. Жми /train!")
+                bot.send_message(msg.chat.id, "Сегодня ещё не было тренировок.")
+                    .reply_markup(make_commands_keyboard())
                     .await?;
             } else {
                 let mut text = String::from("📊 Сегодня:\n\n");
@@ -450,7 +465,9 @@ async fn handle_command(
                         t.exercise, t.sets, t.reps
                     ));
                 }
-                bot.send_message(msg.chat.id, text).await?;
+                bot.send_message(msg.chat.id, text)
+                    .reply_markup(make_commands_keyboard())
+                    .await?;
             }
         }
 
@@ -535,7 +552,9 @@ async fn handle_command(
                 }
             }
 
-            bot.send_message(msg.chat.id, text).await?;
+            bot.send_message(msg.chat.id, text)
+                .reply_markup(make_commands_keyboard())
+                .await?;
         }
 
         Command::Remind => {
@@ -548,11 +567,12 @@ async fn handle_command(
                 format!(
                     "✅ Напоминания включены!\n\n\
                     Буду напоминать раз в час.\n\
-                    /stop - выключить\n\n\
                     Активных подписчиков: {}",
                     count
                 )
-            ).await?;
+            )
+            .reply_markup(make_commands_keyboard())
+            .await?;
 
             info!("User {} subscribed to reminders", msg.chat.id);
         }
@@ -562,11 +582,13 @@ async fn handle_command(
             let was_subscribed = subs.remove(&msg.chat.id);
 
             if was_subscribed {
-                bot.send_message(msg.chat.id, "🔕 Напоминания выключены.\n\n/remind - включить снова")
+                bot.send_message(msg.chat.id, "🔕 Напоминания выключены.")
+                    .reply_markup(make_commands_keyboard())
                     .await?;
                 info!("User {} unsubscribed from reminders", msg.chat.id);
             } else {
-                bot.send_message(msg.chat.id, "Напоминания и так выключены.\n\n/remind - включить")
+                bot.send_message(msg.chat.id, "Напоминания и так выключены.")
+                    .reply_markup(make_commands_keyboard())
                     .await?;
             }
         }
@@ -574,10 +596,12 @@ async fn handle_command(
         Command::Tip => {
             let tip = tips::get_random_tip();
             let text = format!(
-                "📖 Совет из книги\n\"You Are Your Own Gym\"\n\n{}\n\n/tip - ещё совет",
+                "📖 Совет из книги\n\"You Are Your Own Gym\"\n\n{}",
                 tips::format_tip(tip)
             );
-            bot.send_message(msg.chat.id, text).await?;
+            bot.send_message(msg.chat.id, text)
+                .reply_markup(make_commands_keyboard())
+                .await?;
         }
 
         Command::Balance => {
@@ -588,7 +612,9 @@ async fn handle_command(
             let recommender = Recommender::new(trainings);
             let report = recommender.get_balance_report();
 
-            bot.send_message(msg.chat.id, format!("🏋️ {}", report)).await?;
+            bot.send_message(msg.chat.id, format!("🏋️ {}", report))
+                .reply_markup(make_commands_keyboard())
+                .await?;
         }
     }
 
@@ -646,6 +672,166 @@ async fn handle_callback(
                 bot.edit_message_text(msg.chat().id, msg.id(), "📖 Упражнения из книги:")
                     .reply_markup(keyboard)
                     .await?;
+            }
+        }
+        // Handle command buttons (cmd:train, cmd:stats, cmd:balance, cmd:tip)
+        else if let Some(cmd) = data.strip_prefix("cmd:") {
+            if let Some(msg) = &q.message {
+                let chat_id_tg = msg.chat().id;
+                match cmd {
+                    "train" => {
+                        // Get recommendation based on muscle balance
+                        let trainings = {
+                            let db = db.lock().await;
+                            db.get_trainings_for_user(user.id)?
+                        };
+                        let recommender = Recommender::new(trainings.clone());
+
+                        if let Some(rec) = recommender.get_recommendation() {
+                            let goal_info = GoalCalculator::calculate(&trainings, rec.exercise.name)
+                                .map(|g| format!("\n\n📊 {}", g.format_short()))
+                                .unwrap_or_default();
+
+                            let text = if rec.is_bonus {
+                                let desc = rec.detailed_description
+                                    .as_deref()
+                                    .or(rec.exercise.description)
+                                    .unwrap_or("");
+                                let focus = rec.focus_cues
+                                    .as_deref()
+                                    .or(rec.exercise.focus_cues)
+                                    .map(|f| format!("\n\n🎯 Фокус: {}", f))
+                                    .unwrap_or_default();
+                                let muscles: Vec<_> = rec.exercise.muscle_groups
+                                    .iter()
+                                    .map(|m| m.name_ru())
+                                    .collect();
+                                let muscle_info = format!("\n\n💪 Мышцы: {}", muscles.join(", "));
+
+                                format!(
+                                    "🎁 Бонус! База выполнена!\n\n{} {}\n\n{}\n\n📖 {}{}{}{}\n\nВыбрать или пропустить?",
+                                    rec.exercise.category.emoji(),
+                                    rec.exercise.name,
+                                    rec.reason,
+                                    desc,
+                                    focus,
+                                    muscle_info,
+                                    goal_info
+                                )
+                            } else {
+                                format!(
+                                    "🎯 Рекомендую: {} {}\n\n{}{}\n\nВыбрать рекомендованное или другое?",
+                                    rec.exercise.category.emoji(),
+                                    rec.exercise.name,
+                                    rec.reason,
+                                    goal_info
+                                )
+                            };
+
+                            let keyboard = if rec.is_bonus {
+                                let mut rows = vec![
+                                    vec![
+                                        InlineKeyboardButton::callback(
+                                            format!("✓ {}", rec.exercise.name),
+                                            format!("ex:{}", rec.exercise.id)
+                                        ),
+                                    ],
+                                ];
+                                if rec.exercise.id != "shadow_boxing" {
+                                    rows.push(vec![
+                                        InlineKeyboardButton::callback("☯ бой с тенью", "ex:shadow_boxing")
+                                    ]);
+                                }
+                                rows.push(vec![
+                                    InlineKeyboardButton::callback("Пропустить", "skip_bonus")
+                                ]);
+                                InlineKeyboardMarkup::new(rows)
+                            } else {
+                                InlineKeyboardMarkup::new(vec![
+                                    vec![
+                                        InlineKeyboardButton::callback(
+                                            format!("✓ {}", rec.exercise.name),
+                                            format!("ex:{}", rec.exercise.id)
+                                        ),
+                                    ],
+                                    vec![
+                                        InlineKeyboardButton::callback("Выбрать другое", "show_all")
+                                    ],
+                                ])
+                            };
+                            bot.send_message(chat_id_tg, text)
+                                .reply_markup(keyboard)
+                                .await?;
+                        } else {
+                            let keyboard = make_exercises_keyboard();
+                            bot.send_message(chat_id_tg, "Выбери упражнение:")
+                                .reply_markup(keyboard)
+                                .await?;
+                        }
+                    }
+                    "stats" => {
+                        let trainings = {
+                            let db = db.lock().await;
+                            db.get_trainings_for_user(user.id)?
+                        };
+
+                        let total = trainings.len();
+                        let today = Utc::now().with_timezone(&moscow_tz()).date_naive();
+                        let week_ago = today - chrono::Duration::days(7);
+                        let month_ago = today - chrono::Duration::days(30);
+
+                        let today_trainings: Vec<_> = trainings.iter()
+                            .filter(|t| t.date.with_timezone(&moscow_tz()).date_naive() == today)
+                            .collect();
+                        let week_trainings: Vec<_> = trainings.iter()
+                            .filter(|t| t.date.with_timezone(&moscow_tz()).date_naive() > week_ago)
+                            .collect();
+                        let month_trainings: Vec<_> = trainings.iter()
+                            .filter(|t| t.date.with_timezone(&moscow_tz()).date_naive() > month_ago)
+                            .collect();
+
+                        let today_time: i32 = today_trainings.iter().filter_map(|t| t.duration_secs).sum();
+                        let week_time: i32 = week_trainings.iter().filter_map(|t| t.duration_secs).sum();
+                        let month_time: i32 = month_trainings.iter().filter_map(|t| t.duration_secs).sum();
+
+                        let text = format!(
+                            "📈 Статистика\n\n\
+                            Всего: {} подх.\n\
+                            Сегодня: {} ({})\n\
+                            Неделя: {} ({})\n\
+                            Месяц: {} ({})",
+                            total,
+                            today_trainings.len(), format_duration(today_time),
+                            week_trainings.len(), format_duration(week_time),
+                            month_trainings.len(), format_duration(month_time)
+                        );
+                        bot.send_message(chat_id_tg, text)
+                            .reply_markup(make_commands_keyboard())
+                            .await?;
+                    }
+                    "balance" => {
+                        let trainings = {
+                            let db = db.lock().await;
+                            db.get_trainings_for_user(user.id)?
+                        };
+                        let recommender = Recommender::new(trainings);
+                        let report = recommender.get_balance_report();
+                        bot.send_message(chat_id_tg, format!("🏋️ {}", report))
+                            .reply_markup(make_commands_keyboard())
+                            .await?;
+                    }
+                    "tip" => {
+                        let tip = tips::get_random_tip();
+                        let text = format!(
+                            "📖 Совет из книги\n\"You Are Your Own Gym\"\n\n{}",
+                            tips::format_tip(tip)
+                        );
+                        bot.send_message(chat_id_tg, text)
+                            .reply_markup(make_commands_keyboard())
+                            .await?;
+                    }
+                    _ => {}
+                }
             }
         }
         // Handle exercise selection
@@ -953,12 +1139,7 @@ async fn handle_message(
                         {}\n\
                         Пульс: {} -> {} ({}{}) уд/мин\n\n\
                         {}\n\
-                        Сегодня: {} подх., {}{}\n\n\
-                        📋 Команды:\n\
-                        /train - ещё упражнение\n\
-                        /stats - статистика\n\
-                        /balance - баланс мышц\n\
-                        /tip - совет",
+                        Сегодня: {} подх., {}{}",
                         exercise_info,
                         pulse_before, pulse_after, pulse_indicator, pulse_diff,
                         record_info,
@@ -966,7 +1147,9 @@ async fn handle_message(
                         ml_section
                     );
 
-                    bot.send_message(msg.chat.id, response).await?;
+                    bot.send_message(msg.chat.id, response)
+                        .reply_markup(make_commands_keyboard())
+                        .await?;
                     dialogue.reset().await?;
                 } else {
                     bot.send_message(msg.chat.id, "Введи пульс (число)").await?;
