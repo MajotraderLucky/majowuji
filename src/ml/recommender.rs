@@ -2,7 +2,7 @@
 
 use chrono::{Local, Utc};
 use crate::db::Training;
-use crate::exercises::{Exercise, find_exercise_by_name, get_base_exercises, get_all_exercises};
+use crate::exercises::{Exercise, get_base_exercises, get_all_exercises};
 use super::muscle_tracker::MuscleTracker;
 
 /// A recommendation with explanation
@@ -78,20 +78,9 @@ impl Recommender {
                 continue;
             }
 
-            // Skip if same category exercise was done today (e.g., both push exercises)
-            let same_category_done = self.trainings.iter().any(|t| {
-                if t.date.with_timezone(&Local).date_naive() != today {
-                    return false;
-                }
-                if let Some(done_ex) = find_exercise_by_name(&t.exercise) {
-                    done_ex.category == exercise.category
-                } else {
-                    false
-                }
-            });
-            if same_category_done {
-                continue;
-            }
+            // Note: We don't skip by category for base exercises
+            // because the user should complete all 6 base exercises daily,
+            // even if some share the same category (e.g., two push exercises)
 
             // Check rest time
             let hours_since = self.hours_since_exercise(exercise.name);
@@ -312,7 +301,6 @@ impl Recommender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exercises::Category;
 
     fn create_training(exercise: &str, reps: i32) -> Training {
         Training {
@@ -374,17 +362,18 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_same_category_today() {
-        // If pushups on fists done today, should not recommend pushups with handles
+    fn test_allow_same_category_for_base_program() {
+        // Base program allows multiple exercises of same category
+        // e.g., both pushups on fists AND pushups with handles are base exercises
         let trainings = vec![
-            create_training("отжимания на кулаках", 20),
+            create_training_local_today("отжимания на кулаках", 20, 2), // 2 hours ago to pass rest time
         ];
         let recommender = Recommender::new(trainings);
         let rec = recommender.get_recommendation().unwrap();
 
-        // Should not recommend another Push exercise
-        assert_ne!(rec.exercise.category, Category::Push,
-            "Should not recommend {} (Push category) when pushups already done", rec.exercise.name);
+        // Should still recommend base exercises even if same category
+        assert!(rec.exercise.is_base,
+            "Should recommend base exercise, got: {}", rec.exercise.name);
     }
 
     #[test]
