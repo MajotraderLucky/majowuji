@@ -31,7 +31,8 @@ pub struct HistoricalSession {
     pub date: DateTime<Utc>,
     pub context_before: SessionContext,
     pub exercise_name: String,
-    pub achieved_reps: i32,
+    /// Achieved value (reps or seconds for timed exercises)
+    pub achieved_value: i32,
 }
 
 /// Confidence level for goal prediction
@@ -58,8 +59,10 @@ impl GoalConfidence {
 /// Progress goal with fatigue adjustment
 #[derive(Debug, Clone)]
 pub struct ProgressGoal {
-    /// Target reps (adjusted for fatigue + 1 for progress)
-    pub target_reps: i32,
+    /// Target value (reps or seconds for timed exercises)
+    pub target_value: i32,
+    /// Is this a timed exercise?
+    pub is_timed: bool,
     /// Confidence level
     pub confidence: GoalConfidence,
     /// Fatigue factor (0.0 = fresh, 1.0 = fatigued)
@@ -68,8 +71,8 @@ pub struct ProgressGoal {
     pub similar_sessions: usize,
     /// Sets done today for this exercise
     pub today_sets: usize,
-    /// Total reps done today for this exercise
-    pub today_reps: i32,
+    /// Total value done today (reps or seconds)
+    pub today_value: i32,
     /// Fatigued muscle groups (for display)
     pub fatigued_muscles: Vec<MuscleGroup>,
 }
@@ -96,25 +99,68 @@ impl ProgressGoal {
             String::new()
         };
 
-        format!(
-            "Сегодня: {} подх., {} повт.\n  Цель: ~{} повторов {}{}",
-            self.today_sets,
-            self.today_reps,
-            self.target_reps,
-            confidence_label,
-            fatigue_info
-        )
+        if self.is_timed {
+            // Timed exercise: show seconds/minutes
+            let (today_str, target_str) = Self::format_duration_pair(self.today_value, self.target_value);
+            format!(
+                "Сегодня: {} подх., {}\n  Цель: ~{} {}{}",
+                self.today_sets,
+                today_str,
+                target_str,
+                confidence_label,
+                fatigue_info
+            )
+        } else {
+            format!(
+                "Сегодня: {} подх., {} повт.\n  Цель: ~{} повторов {}{}",
+                self.today_sets,
+                self.today_value,
+                self.target_value,
+                confidence_label,
+                fatigue_info
+            )
+        }
     }
 
     /// Format short goal for recommendation
     pub fn format_short(&self) -> String {
         let confidence_label = self.confidence.label();
-        format!(
-            "Сегодня: {} подх. | Цель: ~{} {}",
-            self.today_sets,
-            self.target_reps,
-            confidence_label
-        )
+        if self.is_timed {
+            let target_str = Self::format_duration(self.target_value);
+            format!(
+                "Сегодня: {} подх. | Цель: ~{} {}",
+                self.today_sets,
+                target_str,
+                confidence_label
+            )
+        } else {
+            format!(
+                "Сегодня: {} подх. | Цель: ~{} {}",
+                self.today_sets,
+                self.target_value,
+                confidence_label
+            )
+        }
+    }
+
+    /// Format duration in human-readable form
+    pub(crate) fn format_duration(secs: i32) -> String {
+        if secs >= 60 {
+            let mins = secs / 60;
+            let remaining = secs % 60;
+            if remaining > 0 {
+                format!("{}м {}с", mins, remaining)
+            } else {
+                format!("{}м", mins)
+            }
+        } else {
+            format!("{}с", secs)
+        }
+    }
+
+    /// Format today's and target durations
+    fn format_duration_pair(today: i32, target: i32) -> (String, String) {
+        (Self::format_duration(today), Self::format_duration(target))
     }
 }
 
@@ -134,6 +180,7 @@ impl GoalCalculator {
         exercise_name: &str,
     ) -> Option<ProgressGoal> {
         let exercise = find_exercise_by_name(exercise_name)?;
+        let is_timed = exercise.is_timed;
 
         // Build current session context
         let current_context = Self::build_current_context(trainings);
@@ -156,30 +203,47 @@ impl GoalCalculator {
             .filter(|t| t.exercise == exercise_name)
             .collect();
         let today_sets = today_exercises.len();
-        let today_reps: i32 = today_exercises.iter().map(|t| t.reps).sum();
+
+        // For timed exercises, sum duration_secs; for rep-based, sum reps
+        let today_value: i32 = if is_timed {
+            today_exercises.iter().filter_map(|t| t.duration_secs).sum()
+        } else {
+            today_exercises.iter().map(|t| t.reps).sum()
+        };
 
         // Find similar historical sessions
-        let similar = Self::find_similar_sessions(trainings, exercise_name, &current_context);
+        let similar = Self::find_similar_sessions(trainings, exercise_name, &current_context, is_timed);
 
-        // Calculate target reps
-        let target_reps = if similar.is_empty() {
+        // Calculate target value (reps or seconds)
+        let target_value = if similar.is_empty() {
             // No similar sessions - use personal best or default
-            let best = trainings
-                .iter()
-                .filter(|t| t.exercise == exercise_name)
-                .map(|t| t.reps)
-                .max()
-                .unwrap_or(10);
+            let best = if is_timed {
+                trainings
+                    .iter()
+                    .filter(|t| t.exercise == exercise_name)
+                    .filter_map(|t| t.duration_secs)
+                    .max()
+                    .unwrap_or(60) // default 60 seconds for timed
+            } else {
+                trainings
+                    .iter()
+                    .filter(|t| t.exercise == exercise_name)
+                    .map(|t| t.reps)
+                    .max()
+                    .unwrap_or(10)
+            };
             // Adjust for fatigue
             ((best as f32) * (1.0 - fatigue_factor * 0.3)).round() as i32
         } else {
-            // Weighted average of similar sessions + 1 for progress
+            // Weighted average of similar sessions + progress increment
             let weighted_sum: f32 = similar.iter()
-                .map(|(s, sim)| s.achieved_reps as f32 * sim)
+                .map(|(s, sim)| s.achieved_value as f32 * sim)
                 .sum();
             let weight_total: f32 = similar.iter().map(|(_, sim)| sim).sum();
             let avg = weighted_sum / weight_total;
-            (avg + 1.0).round() as i32
+            // For timed: add 10 seconds, for reps: add 1 rep
+            let increment = if is_timed { 10.0 } else { 1.0 };
+            (avg + increment).round() as i32
         };
 
         let confidence = match similar.len() {
@@ -189,12 +253,13 @@ impl GoalCalculator {
         };
 
         Some(ProgressGoal {
-            target_reps: target_reps.max(1),
+            target_value: target_value.max(1),
+            is_timed,
             confidence,
             fatigue_factor,
             similar_sessions: similar.len(),
             today_sets,
-            today_reps,
+            today_value,
             fatigued_muscles,
         })
     }
@@ -254,6 +319,7 @@ impl GoalCalculator {
         trainings: &[Training],
         exercise_name: &str,
         current_context: &SessionContext,
+        is_timed: bool,
     ) -> Vec<(HistoricalSession, f32)> {
         // Group trainings by day
         let sessions_by_day = Self::group_by_day(trainings);
@@ -289,12 +355,18 @@ impl GoalCalculator {
                     let similarity = Self::compute_similarity(&context_before, current_context);
 
                     if similarity >= Self::MIN_SIMILARITY {
+                        // Use duration_secs for timed exercises, reps otherwise
+                        let achieved_value = if is_timed {
+                            training.duration_secs.unwrap_or(0)
+                        } else {
+                            training.reps
+                        };
                         similar.push((
                             HistoricalSession {
                                 date: training.date,
                                 context_before,
                                 exercise_name: training.exercise.clone(),
-                                achieved_reps: training.reps,
+                                achieved_value,
                             },
                             similarity,
                         ));
@@ -458,19 +530,20 @@ mod tests {
 
         let g = goal.unwrap();
         // Target should be around average + 1 = ~12
-        assert!(g.target_reps >= 10 && g.target_reps <= 15,
-            "Target: {}", g.target_reps);
+        assert!(g.target_value >= 10 && g.target_value <= 15,
+            "Target: {}", g.target_value);
     }
 
     #[test]
     fn test_goal_format() {
         let goal = ProgressGoal {
-            target_reps: 15,
+            target_value: 15,
+            is_timed: false,
             confidence: GoalConfidence::Low,
             fatigue_factor: 0.35,
             similar_sessions: 2,
             today_sets: 1,
-            today_reps: 12,
+            today_value: 12,
             fatigued_muscles: vec![MuscleGroup::Chest, MuscleGroup::Triceps],
         };
 
@@ -484,12 +557,13 @@ mod tests {
     #[test]
     fn test_goal_format_short() {
         let goal = ProgressGoal {
-            target_reps: 15,
+            target_value: 15,
+            is_timed: false,
             confidence: GoalConfidence::Medium,
             fatigue_factor: 0.0,
             similar_sessions: 4,
             today_sets: 2,
-            today_reps: 25,
+            today_value: 25,
             fatigued_muscles: vec![],
         };
 
@@ -504,5 +578,36 @@ mod tests {
         assert_eq!(GoalConfidence::Low.label(), "(мало данных)");
         assert_eq!(GoalConfidence::Medium.label(), "");
         assert_eq!(GoalConfidence::High.label(), "");
+    }
+
+    #[test]
+    fn test_timed_exercise_format() {
+        let goal = ProgressGoal {
+            target_value: 180, // 3 minutes
+            is_timed: true,
+            confidence: GoalConfidence::Medium,
+            fatigue_factor: 0.0,
+            similar_sessions: 4,
+            today_sets: 1,
+            today_value: 120, // 2 minutes
+            fatigued_muscles: vec![],
+        };
+
+        let formatted = goal.format();
+        assert!(formatted.contains("2м"), "Should show today's duration in minutes: {}", formatted);
+        assert!(formatted.contains("3м"), "Should show target duration in minutes: {}", formatted);
+
+        let short = goal.format_short();
+        assert!(short.contains("3м"), "Short format should show target in minutes: {}", short);
+    }
+
+    #[test]
+    fn test_format_duration() {
+        // Test duration formatting helper
+        assert_eq!(ProgressGoal::format_duration(45), "45с");
+        assert_eq!(ProgressGoal::format_duration(60), "1м");
+        assert_eq!(ProgressGoal::format_duration(90), "1м 30с");
+        assert_eq!(ProgressGoal::format_duration(180), "3м");
+        assert_eq!(ProgressGoal::format_duration(169), "2м 49с");
     }
 }
