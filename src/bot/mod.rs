@@ -866,8 +866,8 @@ async fn handle_callback(
             }
         }
         // Handle exercise selection
-        else if let Some(exercise_id) = data.strip_prefix("ex:") {
-            if let Some(exercise) = find_exercise(exercise_id) {
+        else if let Some(exercise_id) = data.strip_prefix("ex:")
+            && let Some(exercise) = find_exercise(exercise_id) {
                 // Set state to waiting for pulse before exercise
                 dialogue.update(State::WaitingForPulseBefore {
                     exercise_id: exercise_id.to_string(),
@@ -906,7 +906,6 @@ async fn handle_callback(
                         .await?;
                 }
             }
-        }
     }
 
     bot.answer_callback_query(q.id).await?;
@@ -960,7 +959,7 @@ async fn handle_message(
         State::WaitingForPulseBefore { exercise_id, exercise_name, user_id } => {
             if let Some(text) = msg.text() {
                 if let Ok(pulse) = text.trim().parse::<i32>() {
-                    if pulse < 30 || pulse > 250 {
+                    if !(30..=250).contains(&pulse) {
                         bot.send_message(msg.chat.id, "Пульс должен быть от 30 до 250").await?;
                         return Ok(());
                     }
@@ -1007,7 +1006,7 @@ async fn handle_message(
                 if is_timed {
                     // For timed exercises: user enters actual hold time in seconds
                     if let Ok(duration_secs) = text.trim().parse::<i32>() {
-                        if duration_secs < 1 || duration_secs > 3600 {
+                        if !(1..=3600).contains(&duration_secs) {
                             bot.send_message(msg.chat.id, "Введи время от 1 до 3600 секунд").await?;
                             return Ok(());
                         }
@@ -1060,7 +1059,7 @@ async fn handle_message(
         State::WaitingForPulseAfter { exercise_id, exercise_name, pulse_before, reps, duration_secs, user_id } => {
             if let Some(text) = msg.text() {
                 if let Ok(pulse_after) = text.trim().parse::<i32>() {
-                    if pulse_after < 30 || pulse_after > 250 {
+                    if !(30..=250).contains(&pulse_after) {
                         bot.send_message(msg.chat.id, "Пульс должен быть от 30 до 250").await?;
                         return Ok(());
                     }
@@ -1156,12 +1155,10 @@ async fn handle_message(
                         } else {
                             format!("🏆 НОВЫЙ РЕКОРД! {} повторов", personal_record)
                         }
+                    } else if is_timed {
+                        format!("Рекорд: {}с", personal_record)
                     } else {
-                        if is_timed {
-                            format!("Рекорд: {}с", personal_record)
-                        } else {
-                            format!("Рекорд: {} повторов", personal_record)
-                        }
+                        format!("Рекорд: {} повторов", personal_record)
                     };
 
                     // Build response with optional ML prediction

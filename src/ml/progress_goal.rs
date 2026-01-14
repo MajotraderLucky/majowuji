@@ -340,9 +340,8 @@ impl GoalCalculator {
             // Reconstruct context before each exercise
             let mut accumulated_load: HashMap<MuscleGroup, i32> = HashMap::new();
             let mut session_duration = 0;
-            let mut exercises_done = 0;
 
-            for training in sorted {
+            for (exercises_done, training) in sorted.into_iter().enumerate() {
                 // Build context BEFORE this exercise
                 let context_before = SessionContext {
                     prior_load: accumulated_load.clone(),
@@ -380,7 +379,6 @@ impl GoalCalculator {
                     }
                 }
                 session_duration += training.duration_secs.unwrap_or(0);
-                exercises_done += 1;
             }
         }
 

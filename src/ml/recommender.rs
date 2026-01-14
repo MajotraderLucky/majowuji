@@ -156,7 +156,7 @@ impl Recommender {
         if !never_done_underworked.is_empty() {
             // Sort by number of underworked muscles targeted
             let mut sorted = never_done_underworked;
-            sorted.sort_by(|a, b| underworked_count(b).cmp(&underworked_count(a)));
+            sorted.sort_by_key(|e| std::cmp::Reverse(underworked_count(e)));
 
             let exercise = sorted[0];
             let muscle_names: Vec<_> = exercise.muscle_groups
@@ -183,7 +183,7 @@ impl Recommender {
         if !never_done_any.is_empty() {
             // Prefer those targeting underworked muscles, then by variety
             let mut sorted = never_done_any;
-            sorted.sort_by(|a, b| underworked_count(b).cmp(&underworked_count(a)));
+            sorted.sort_by_key(|e| std::cmp::Reverse(underworked_count(e)));
 
             let exercise = sorted[0];
             return Some(Recommendation {
