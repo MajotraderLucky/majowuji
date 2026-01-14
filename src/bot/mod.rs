@@ -1086,6 +1086,26 @@ async fn handle_message(
                     // Count today's sets, total time, personal record, and ML prediction
                     let (today_sets, total_time, personal_record, is_new_record, ml_prediction) = {
                         let db = db.lock().await;
+
+                        // Get previous record BEFORE adding current training
+                        let trainings_before = db.get_trainings_for_user(user_id)?;
+                        let previous_record = if is_timed {
+                            trainings_before.iter()
+                                .filter(|t| t.exercise == exercise_name)
+                                .filter_map(|t| t.duration_secs)
+                                .max()
+                                .unwrap_or(0)
+                        } else {
+                            trainings_before.iter()
+                                .filter(|t| t.exercise == exercise_name)
+                                .map(|t| t.reps)
+                                .max()
+                                .unwrap_or(0)
+                        };
+                        let had_previous_attempts = trainings_before.iter()
+                            .any(|t| t.exercise == exercise_name);
+
+                        // Now add the training
                         db.add_training(&training, user_id)?;
 
                         let trainings = db.get_trainings_for_user(user_id)?;
@@ -1102,28 +1122,10 @@ async fn handle_message(
                             .filter_map(|t| t.duration_secs)
                             .sum();
 
-                        // Personal record for this exercise
-                        let all_this_exercise: Vec<_> = trainings.iter()
-                            .filter(|t| t.exercise == exercise_name)
-                            .collect();
-
-                        let total_attempts = all_this_exercise.len();
-                        let (record, is_new) = if is_timed {
-                            // For timed: max duration
-                            let max_duration = all_this_exercise.iter()
-                                .filter_map(|t| t.duration_secs)
-                                .max()
-                                .unwrap_or(0);
-                            // New record if beat previous AND not first attempt ever
-                            (max_duration, duration_secs >= max_duration && total_attempts > 1)
-                        } else {
-                            // For rep-based: max reps in single set
-                            let max_reps = all_this_exercise.iter()
-                                .map(|t| t.reps)
-                                .max()
-                                .unwrap_or(0);
-                            (max_reps, reps >= max_reps && total_attempts > 1)
-                        };
+                        // Check if this is a new record (beat previous, not just equal)
+                        let current_value = if is_timed { duration_secs } else { reps };
+                        let is_new = had_previous_attempts && current_value > previous_record;
+                        let record = current_value.max(previous_record);
 
                         // ML prediction (only for rep-based exercises with enough data)
                         let prediction = if !is_timed {
