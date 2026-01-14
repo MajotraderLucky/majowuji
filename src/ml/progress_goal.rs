@@ -105,25 +105,36 @@ impl ProgressGoal {
             }
         }
 
-        // Fatigue-adjusted target (smart goal)
-        if self.fatigue_factor > 0.1 {
-            let muscles: Vec<&str> = self.fatigued_muscles
-                .iter()
-                .take(2)
-                .map(|m| m.name_ru())
-                .collect();
-            let fatigue_note = if muscles.is_empty() {
-                String::new()
+        // Smart target (show if different from simple +1)
+        let dominated_by_beat = self.beat_record_target
+            .map(|beat| self.target_value == beat)
+            .unwrap_or(false);
+
+        if !dominated_by_beat {
+            // Build explanation for the smart target
+            let explanation = if self.fatigue_factor > 0.1 {
+                let muscles: Vec<&str> = self.fatigued_muscles
+                    .iter()
+                    .take(2)
+                    .map(|m| m.name_ru())
+                    .collect();
+                if muscles.is_empty() {
+                    "с учётом усталости".to_string()
+                } else {
+                    format!("усталость {}", muscles.join(", "))
+                }
+            } else if self.similar_sessions >= 3 {
+                format!("по {} похожим тренировкам", self.similar_sessions)
             } else {
-                format!(" (усталость {})", muscles.join(", "))
+                "прогноз".to_string()
             };
 
             if self.is_timed {
-                lines.push(format!("  С усталостью: ~{}{}",
+                lines.push(format!("  ML: ~{} ({})",
                     Self::format_duration(self.target_value),
-                    fatigue_note));
+                    explanation));
             } else {
-                lines.push(format!("  С усталостью: ~{}{}", self.target_value, fatigue_note));
+                lines.push(format!("  ML: ~{} ({})", self.target_value, explanation));
             }
         }
 
@@ -132,16 +143,34 @@ impl ProgressGoal {
 
     /// Format short goal for recommendation
     pub fn format_short(&self) -> String {
-        // Show simple "beat record" goal in short format
         if let (Some(best), Some(beat)) = (self.personal_best, self.beat_record_target) {
+            // Check if ML target differs from simple +1
+            let ml_part = if self.target_value != beat {
+                let explanation = if self.fatigue_factor > 0.1 {
+                    "усталость"
+                } else if self.similar_sessions >= 3 {
+                    "ML"
+                } else {
+                    "прогноз"
+                };
+                if self.is_timed {
+                    format!(" | {}: ~{}", explanation, Self::format_duration(self.target_value))
+                } else {
+                    format!(" | {}: ~{}", explanation, self.target_value)
+                }
+            } else {
+                String::new()
+            };
+
             if self.is_timed {
-                format!("Сегодня: {} подх. | Рекорд: {} → побей: {}",
+                format!("Сегодня: {} подх. | Рекорд: {} → побей: {}{}",
                     self.today_sets,
                     Self::format_duration(best),
-                    Self::format_duration(beat))
+                    Self::format_duration(beat),
+                    ml_part)
             } else {
-                format!("Сегодня: {} подх. | Рекорд: {} → побей: {}",
-                    self.today_sets, best, beat)
+                format!("Сегодня: {} подх. | Рекорд: {} → побей: {}{}",
+                    self.today_sets, best, beat, ml_part)
             }
         } else {
             // No history - show default target
@@ -560,8 +589,9 @@ mod tests {
 
     #[test]
     fn test_goal_format() {
+        // Test with fatigue - ML target differs from simple +1
         let goal = ProgressGoal {
-            target_value: 15,
+            target_value: 12, // Different from beat_record_target due to fatigue
             personal_best: Some(14),
             beat_record_target: Some(15),
             is_timed: false,
@@ -569,14 +599,15 @@ mod tests {
             fatigue_factor: 0.35,
             similar_sessions: 2,
             today_sets: 1,
-            today_value: 12,
+            today_value: 10,
             fatigued_muscles: vec![MuscleGroup::Chest, MuscleGroup::Triceps],
         };
 
         let formatted = goal.format();
         assert!(formatted.contains("Сегодня: 1 подх."), "Format: {}", formatted);
         assert!(formatted.contains("Рекорд: 14 → побей: 15"), "Format: {}", formatted);
-        assert!(formatted.contains("С усталостью:"), "Format: {}", formatted);
+        assert!(formatted.contains("ML: ~12"), "Should show ML target: {}", formatted);
+        assert!(formatted.contains("усталость"), "Should mention fatigue: {}", formatted);
     }
 
     #[test]
