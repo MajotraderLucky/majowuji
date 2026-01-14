@@ -69,13 +69,25 @@ Book location: `docs/you-are-your-own-gym.txt`
 
 See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 
+## Recent Changes (2026-01-14)
+
+| Change                                     | Status      |
+|--------------------------------------------|-------------|
+| Fix clippy warnings (10 warnings)          | [+] Done    |
+| Include Cargo.lock for reproducible builds | [+] Done    |
+| Fix "NEW RECORD" bug on repeated result    | [+] Done    |
+| Show both goals: simple +1 and ML target   | [+] Done    |
+
+**Goal Display Logic:**
+- Simple: "Рекорд: 23 → побей: 24" (always shown if history exists)
+- ML: "~20 (усталость грудные)" (shown when differs from simple +1)
+
 ## Backlog
 
 | Task                           | Priority |
 |--------------------------------|----------|
 | Add error logging to bot       | Low      |
 | Weekly/monthly summary reports | Low      |
-| Personal records tracking      | Low      |
 
 ## Telegram Commands
 
