@@ -277,11 +277,8 @@ impl GoalCalculator {
                 .max()
         };
 
-        // Simple target: personal best + increment
-        let beat_record_target = personal_best.map(|best| {
-            let increment = if is_timed { 10 } else { 1 }; // +10 sec or +1 rep
-            best + increment
-        });
+        // Simple target: personal best + 1 (both for reps and seconds)
+        let beat_record_target = personal_best.map(|best| best + 1);
 
         // Find similar historical sessions for fatigue-adjusted target
         let similar = Self::find_similar_sessions(trainings, exercise_name, &current_context, is_timed);
@@ -290,8 +287,7 @@ impl GoalCalculator {
         let target_value = if similar.is_empty() {
             // No similar sessions - use personal best or default, adjusted for fatigue
             let base = personal_best.unwrap_or(if is_timed { 60 } else { 10 });
-            let increment = if is_timed { 10 } else { 1 };
-            let raw_target = base + increment;
+            let raw_target = base + 1;
             ((raw_target as f32) * (1.0 - fatigue_factor * 0.3)).round() as i32
         } else {
             // Weighted average of similar sessions + progress increment
@@ -300,8 +296,7 @@ impl GoalCalculator {
                 .sum();
             let weight_total: f32 = similar.iter().map(|(_, sim)| sim).sum();
             let avg = weighted_sum / weight_total;
-            let increment = if is_timed { 10.0 } else { 1.0 };
-            (avg + increment).round() as i32
+            (avg + 1.0).round() as i32
         };
 
         // Confidence based on total attempts
