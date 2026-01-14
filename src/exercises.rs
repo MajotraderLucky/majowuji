@@ -149,7 +149,27 @@ pub const BASE_EXERCISES: &[Exercise] = &[
         muscle_groups: &[MuscleGroup::FullBody],
         is_base: true,
         is_timed: true,
-        description: None,
+        description: Some("Разминка. Выполняется в начале комплекса"),
+        focus_cues: None,
+    },
+    Exercise {
+        id: "swimmer",
+        name: "пловец",
+        category: Category::Core,
+        muscle_groups: &[MuscleGroup::Back, MuscleGroup::Shoulders],
+        is_base: true,
+        is_timed: false,
+        description: Some("Лёжа на животе, попеременно поднимай противоположные руку и ногу, имитируя плавание"),
+        focus_cues: Some("Контролируй движение, не раскачивайся. Напрягай спину при каждом подъёме. Дыши ровно"),
+    },
+    Exercise {
+        id: "taiji_shadow_weapon",
+        name: "тайцзи бой с тенью с оружием",
+        category: Category::Taiji,
+        muscle_groups: &[MuscleGroup::FullBody],
+        is_base: true,
+        is_timed: true,
+        description: Some("Завершение комплекса. Выполняется после всех базовых упражнений"),
         focus_cues: None,
     },
 ];
@@ -238,16 +258,6 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         is_timed: true,
         description: Some("Лёжа на животе, одновременно подними руки и ноги от пола. Держи позицию. Тренирует разгибатели спины"),
         focus_cues: Some("Сжимай ягодицы. Напрягай поясницу. Тянись макушкой и пятками в разные стороны. Шея нейтральна"),
-    },
-    Exercise {
-        id: "swimmer",
-        name: "пловец",
-        category: Category::Core,
-        muscle_groups: &[MuscleGroup::Back, MuscleGroup::Shoulders],
-        is_base: true,
-        is_timed: false,
-        description: Some("Лёжа на животе, попеременно поднимай противоположные руку и ногу, имитируя плавание"),
-        focus_cues: Some("Контролируй движение, не раскачивайся. Напрягай спину при каждом подъёме. Дыши ровно"),
     },
     Exercise {
         id: "russian_twist",
@@ -439,14 +449,14 @@ mod tests {
     #[test]
     fn test_get_base_exercises_count() {
         let exercises = get_base_exercises();
-        assert_eq!(exercises.len(), 6);
+        assert_eq!(exercises.len(), 8);
     }
 
     #[test]
     fn test_get_all_exercises_count() {
         let exercises = get_all_exercises();
-        // 6 базовых + 21 дополнительных = 27
-        assert_eq!(exercises.len(), 27);
+        // 8 базовых + 20 дополнительных = 28
+        assert_eq!(exercises.len(), 28);
     }
 
     #[test]

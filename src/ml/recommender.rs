@@ -59,17 +59,51 @@ impl Recommender {
         self.get_base_recommendation()
     }
 
-    /// Recommend base exercise
+    /// Check if specific exercise is done today
+    fn is_done_today(&self, exercise_name: &str) -> bool {
+        let today = Local::now().date_naive();
+        self.trainings.iter().any(|t| {
+            t.exercise == exercise_name &&
+            t.date.with_timezone(&Local).date_naive() == today
+        })
+    }
+
+    /// Recommend base exercise with fixed order:
+    /// 1. taiji_shadow first (warmup)
+    /// 2. other base exercises (middle)
+    /// 3. taiji_shadow_weapon last (cooldown)
     fn get_base_recommendation(&self) -> Option<Recommendation> {
         let exercises = get_base_exercises();
         let today = Local::now().date_naive();
 
-        // Find base exercises not done today, prioritize by muscle balance
+        // Priority 1: Warmup - taiji_shadow first
+        if !self.is_done_today("тайцзи бой с тенью") {
+            if let Some(ex) = exercises.iter().find(|e| e.id == "taiji_shadow") {
+                let hours_since = self.hours_since_exercise(ex.name);
+                if hours_since >= 1.0 {
+                    return Some(Recommendation {
+                        exercise: ex,
+                        reason: "разминка — начни с этого".to_string(),
+                        confidence: 1.0,
+                        is_bonus: false,
+                        detailed_description: None,
+                        focus_cues: None,
+                    });
+                }
+            }
+        }
+
+        // Priority 2: Other base exercises (excluding taiji_shadow_weapon)
         let underworked = self.tracker.get_underworked_groups(5);
         let mut candidates: Vec<(&'static Exercise, f32, String)> = Vec::new();
 
         for exercise in exercises {
-            // Skip if done today (exact exercise)
+            // Skip warmup and cooldown exercises
+            if exercise.id == "taiji_shadow" || exercise.id == "taiji_shadow_weapon" {
+                continue;
+            }
+
+            // Skip if done today
             let done_today = self.trainings.iter().any(|t| {
                 t.exercise == exercise.name &&
                 t.date.with_timezone(&Local).date_naive() == today
@@ -77,10 +111,6 @@ impl Recommender {
             if done_today {
                 continue;
             }
-
-            // Note: We don't skip by category for base exercises
-            // because the user should complete all 6 base exercises daily,
-            // even if some share the same category (e.g., two push exercises)
 
             // Check rest time
             let hours_since = self.hours_since_exercise(exercise.name);
@@ -112,18 +142,39 @@ impl Recommender {
             candidates.push((exercise, score, reason));
         }
 
-        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // If we have middle exercises to do, return the best one
+        if !candidates.is_empty() {
+            candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            return candidates.into_iter().next().map(|(exercise, score, reason)| {
+                Recommendation {
+                    exercise,
+                    reason,
+                    confidence: score,
+                    is_bonus: false,
+                    detailed_description: None,
+                    focus_cues: None,
+                }
+            });
+        }
 
-        candidates.into_iter().next().map(|(exercise, score, reason)| {
-            Recommendation {
-                exercise,
-                reason,
-                confidence: score,
-                is_bonus: false,
-                detailed_description: None,
-                focus_cues: None,
+        // Priority 3: Cooldown - taiji_shadow_weapon last
+        if !self.is_done_today("тайцзи бой с тенью с оружием") {
+            if let Some(ex) = exercises.iter().find(|e| e.id == "taiji_shadow_weapon") {
+                let hours_since = self.hours_since_exercise(ex.name);
+                if hours_since >= 1.0 {
+                    return Some(Recommendation {
+                        exercise: ex,
+                        reason: "завершение комплекса".to_string(),
+                        confidence: 1.0,
+                        is_bonus: false,
+                        detailed_description: None,
+                        focus_cues: None,
+                    });
+                }
             }
-        })
+        }
+
+        None
     }
 
     /// Recommend bonus exercise with smart diversity logic
@@ -535,14 +586,17 @@ mod tests {
     fn test_bonus_recommendation_has_focus_cues() {
         // Create trainings for all base exercises to trigger bonus recommendation
         // Base exercises: отжимания на кулаках, отжимания с ручками, пресс складной нож,
-        //                 стойка на локтях, приседания с ударами, тайцзи бой с тенью
+        //                 стойка на локтях, приседания с ударами, пловец,
+        //                 тайцзи бой с тенью, тайцзи бой с тенью с оружием
         let trainings = vec![
             create_training_local_today("отжимания на кулаках", 20, 2),
             create_training_local_today("отжимания с ручками", 20, 2),
             create_training_local_today("пресс складной нож", 20, 2),
             create_training_local_today("стойка на локтях", 60, 2),
             create_training_local_today("приседания с ударами", 30, 2),
+            create_training_local_today("пловец", 20, 2),
             create_training_local_today("тайцзи бой с тенью", 60, 2),
+            create_training_local_today("тайцзи бой с тенью с оружием", 60, 2),
         ];
         let recommender = Recommender::new(trainings);
         let rec = recommender.get_recommendation();
@@ -558,14 +612,17 @@ mod tests {
     fn test_bonus_prioritizes_never_done() {
         // Do all base + some bonus exercises
         // Base exercises: отжимания на кулаках, отжимания с ручками, пресс складной нож,
-        //                 стойка на локтях, приседания с ударами, тайцзи бой с тенью
+        //                 стойка на локтях, приседания с ударами, пловец,
+        //                 тайцзи бой с тенью, тайцзи бой с тенью с оружием
         let trainings = vec![
             create_training_local_today("отжимания на кулаках", 20, 2),
             create_training_local_today("отжимания с ручками", 20, 2),
             create_training_local_today("пресс складной нож", 20, 2),
             create_training_local_today("стойка на локтях", 60, 2),
             create_training_local_today("приседания с ударами", 30, 2),
+            create_training_local_today("пловец", 20, 2),
             create_training_local_today("тайцзи бой с тенью", 60, 2),
+            create_training_local_today("тайцзи бой с тенью с оружием", 60, 2),
             // Some bonus exercises done (2 hours ago to pass rest time check)
             create_training_hours_ago("впусти меня", 10, 2),
             create_training_hours_ago("подъём на носки", 20, 2),
