@@ -59,8 +59,12 @@ impl GoalConfidence {
 /// Progress goal with fatigue adjustment
 #[derive(Debug, Clone)]
 pub struct ProgressGoal {
-    /// Target value (reps or seconds for timed exercises)
+    /// Target value (reps or seconds for timed exercises) - fatigue-adjusted
     pub target_value: i32,
+    /// Personal best (reps or seconds)
+    pub personal_best: Option<i32>,
+    /// Simple target: personal best + 1 (not fatigue-adjusted)
+    pub beat_record_target: Option<i32>,
     /// Is this a timed exercise?
     pub is_timed: bool,
     /// Confidence level
@@ -80,66 +84,77 @@ pub struct ProgressGoal {
 impl ProgressGoal {
     /// Format goal for bot message
     pub fn format(&self) -> String {
-        let confidence_label = self.confidence.label();
+        let mut lines = Vec::new();
 
-        let fatigue_info = if self.fatigue_factor > 0.1 {
+        // Today's stats
+        let today_str = if self.is_timed {
+            format!("Сегодня: {} подх., {}", self.today_sets, Self::format_duration(self.today_value))
+        } else {
+            format!("Сегодня: {} подх., {} повт.", self.today_sets, self.today_value)
+        };
+        lines.push(today_str);
+
+        // Personal best and beat target (simple goal)
+        if let (Some(best), Some(beat)) = (self.personal_best, self.beat_record_target) {
+            if self.is_timed {
+                lines.push(format!("  Рекорд: {} → побей: {}",
+                    Self::format_duration(best),
+                    Self::format_duration(beat)));
+            } else {
+                lines.push(format!("  Рекорд: {} → побей: {}", best, beat));
+            }
+        }
+
+        // Fatigue-adjusted target (smart goal)
+        if self.fatigue_factor > 0.1 {
             let muscles: Vec<&str> = self.fatigued_muscles
                 .iter()
                 .take(2)
                 .map(|m| m.name_ru())
                 .collect();
-            if muscles.is_empty() {
+            let fatigue_note = if muscles.is_empty() {
                 String::new()
             } else {
-                format!("\n  Усталость: {:.0}% ({})",
-                    self.fatigue_factor * 100.0,
-                    muscles.join(", "))
-            }
-        } else {
-            String::new()
-        };
+                format!(" (усталость {})", muscles.join(", "))
+            };
 
-        if self.is_timed {
-            // Timed exercise: show seconds/minutes
-            let (today_str, target_str) = Self::format_duration_pair(self.today_value, self.target_value);
-            format!(
-                "Сегодня: {} подх., {}\n  Цель: ~{} {}{}",
-                self.today_sets,
-                today_str,
-                target_str,
-                confidence_label,
-                fatigue_info
-            )
-        } else {
-            format!(
-                "Сегодня: {} подх., {} повт.\n  Цель: ~{} повторов {}{}",
-                self.today_sets,
-                self.today_value,
-                self.target_value,
-                confidence_label,
-                fatigue_info
-            )
+            if self.is_timed {
+                lines.push(format!("  С усталостью: ~{}{}",
+                    Self::format_duration(self.target_value),
+                    fatigue_note));
+            } else {
+                lines.push(format!("  С усталостью: ~{}{}", self.target_value, fatigue_note));
+            }
         }
+
+        lines.join("\n")
     }
 
     /// Format short goal for recommendation
     pub fn format_short(&self) -> String {
-        let confidence_label = self.confidence.label();
-        if self.is_timed {
-            let target_str = Self::format_duration(self.target_value);
-            format!(
-                "Сегодня: {} подх. | Цель: ~{} {}",
-                self.today_sets,
-                target_str,
-                confidence_label
-            )
+        // Show simple "beat record" goal in short format
+        if let (Some(best), Some(beat)) = (self.personal_best, self.beat_record_target) {
+            if self.is_timed {
+                format!("Сегодня: {} подх. | Рекорд: {} → побей: {}",
+                    self.today_sets,
+                    Self::format_duration(best),
+                    Self::format_duration(beat))
+            } else {
+                format!("Сегодня: {} подх. | Рекорд: {} → побей: {}",
+                    self.today_sets, best, beat)
+            }
         } else {
-            format!(
-                "Сегодня: {} подх. | Цель: ~{} {}",
-                self.today_sets,
-                self.target_value,
-                confidence_label
-            )
+            // No history - show default target
+            let confidence_label = self.confidence.label();
+            if self.is_timed {
+                format!("Сегодня: {} подх. | Цель: ~{} {}",
+                    self.today_sets,
+                    Self::format_duration(self.target_value),
+                    confidence_label)
+            } else {
+                format!("Сегодня: {} подх. | Цель: ~{} {}",
+                    self.today_sets, self.target_value, confidence_label)
+            }
         }
     }
 
@@ -156,11 +171,6 @@ impl ProgressGoal {
         } else {
             format!("{}с", secs)
         }
-    }
-
-    /// Format today's and target durations
-    fn format_duration_pair(today: i32, target: i32) -> (String, String) {
-        (Self::format_duration(today), Self::format_duration(target))
     }
 }
 
@@ -211,29 +221,37 @@ impl GoalCalculator {
             today_exercises.iter().map(|t| t.reps).sum()
         };
 
-        // Find similar historical sessions
+        // Find personal best for this exercise
+        let personal_best: Option<i32> = if is_timed {
+            trainings
+                .iter()
+                .filter(|t| t.exercise == exercise_name)
+                .filter_map(|t| t.duration_secs)
+                .max()
+        } else {
+            trainings
+                .iter()
+                .filter(|t| t.exercise == exercise_name)
+                .map(|t| t.reps)
+                .max()
+        };
+
+        // Simple target: personal best + increment
+        let beat_record_target = personal_best.map(|best| {
+            let increment = if is_timed { 10 } else { 1 }; // +10 sec or +1 rep
+            best + increment
+        });
+
+        // Find similar historical sessions for fatigue-adjusted target
         let similar = Self::find_similar_sessions(trainings, exercise_name, &current_context, is_timed);
 
-        // Calculate target value (reps or seconds)
+        // Calculate fatigue-adjusted target value
         let target_value = if similar.is_empty() {
-            // No similar sessions - use personal best or default
-            let best = if is_timed {
-                trainings
-                    .iter()
-                    .filter(|t| t.exercise == exercise_name)
-                    .filter_map(|t| t.duration_secs)
-                    .max()
-                    .unwrap_or(60) // default 60 seconds for timed
-            } else {
-                trainings
-                    .iter()
-                    .filter(|t| t.exercise == exercise_name)
-                    .map(|t| t.reps)
-                    .max()
-                    .unwrap_or(10)
-            };
-            // Adjust for fatigue
-            ((best as f32) * (1.0 - fatigue_factor * 0.3)).round() as i32
+            // No similar sessions - use personal best or default, adjusted for fatigue
+            let base = personal_best.unwrap_or(if is_timed { 60 } else { 10 });
+            let increment = if is_timed { 10 } else { 1 };
+            let raw_target = base + increment;
+            ((raw_target as f32) * (1.0 - fatigue_factor * 0.3)).round() as i32
         } else {
             // Weighted average of similar sessions + progress increment
             let weighted_sum: f32 = similar.iter()
@@ -241,19 +259,27 @@ impl GoalCalculator {
                 .sum();
             let weight_total: f32 = similar.iter().map(|(_, sim)| sim).sum();
             let avg = weighted_sum / weight_total;
-            // For timed: add 10 seconds, for reps: add 1 rep
             let increment = if is_timed { 10.0 } else { 1.0 };
             (avg + increment).round() as i32
         };
 
-        let confidence = match similar.len() {
-            0..=2 => GoalConfidence::Low,
+        // Confidence based on total attempts
+        let total_attempts = trainings
+            .iter()
+            .filter(|t| t.exercise == exercise_name)
+            .count();
+
+        let confidence = match total_attempts {
+            0 => GoalConfidence::Low,
+            1..=2 => GoalConfidence::Low,
             3..=5 => GoalConfidence::Medium,
             _ => GoalConfidence::High,
         };
 
         Some(ProgressGoal {
             target_value: target_value.max(1),
+            personal_best,
+            beat_record_target,
             is_timed,
             confidence,
             fatigue_factor,
@@ -536,6 +562,8 @@ mod tests {
     fn test_goal_format() {
         let goal = ProgressGoal {
             target_value: 15,
+            personal_best: Some(14),
+            beat_record_target: Some(15),
             is_timed: false,
             confidence: GoalConfidence::Low,
             fatigue_factor: 0.35,
@@ -546,16 +574,17 @@ mod tests {
         };
 
         let formatted = goal.format();
-        assert!(formatted.contains("Сегодня: 1 подх."));
-        assert!(formatted.contains("Цель: ~15"));
-        assert!(formatted.contains("мало данных"));
-        assert!(formatted.contains("Усталость:"));
+        assert!(formatted.contains("Сегодня: 1 подх."), "Format: {}", formatted);
+        assert!(formatted.contains("Рекорд: 14 → побей: 15"), "Format: {}", formatted);
+        assert!(formatted.contains("С усталостью:"), "Format: {}", formatted);
     }
 
     #[test]
     fn test_goal_format_short() {
         let goal = ProgressGoal {
             target_value: 15,
+            personal_best: Some(14),
+            beat_record_target: Some(15),
             is_timed: false,
             confidence: GoalConfidence::Medium,
             fatigue_factor: 0.0,
@@ -566,9 +595,8 @@ mod tests {
         };
 
         let formatted = goal.format_short();
-        assert!(formatted.contains("Сегодня: 2 подх."));
-        assert!(formatted.contains("Цель: ~15"));
-        assert!(!formatted.contains("мало данных"));
+        assert!(formatted.contains("Сегодня: 2 подх."), "Format: {}", formatted);
+        assert!(formatted.contains("Рекорд: 14 → побей: 15"), "Format: {}", formatted);
     }
 
     #[test]
@@ -582,6 +610,8 @@ mod tests {
     fn test_timed_exercise_format() {
         let goal = ProgressGoal {
             target_value: 180, // 3 minutes
+            personal_best: Some(170), // 2m 50s
+            beat_record_target: Some(180), // 3m
             is_timed: true,
             confidence: GoalConfidence::Medium,
             fatigue_factor: 0.0,
@@ -593,7 +623,7 @@ mod tests {
 
         let formatted = goal.format();
         assert!(formatted.contains("2м"), "Should show today's duration in minutes: {}", formatted);
-        assert!(formatted.contains("3м"), "Should show target duration in minutes: {}", formatted);
+        assert!(formatted.contains("побей: 3м"), "Should show beat target in minutes: {}", formatted);
 
         let short = goal.format_short();
         assert!(short.contains("3м"), "Short format should show target in minutes: {}", short);
