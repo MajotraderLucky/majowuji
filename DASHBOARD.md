@@ -81,6 +81,16 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 | Restructure base program (8 exercises)     | [+] Done    |
 | Add taiji_shadow_weapon (cooldown)         | [+] Done    |
 | Add swimmer to base program                | [+] Done    |
+| Change beat record target to +1 for timed  | [+] Done    |
+| Add base program completion summary        | [+] Done    |
+
+**Base Program Summary:**
+After completing the last base exercise, shows:
+- Full list of 8 exercises with results
+- New records highlighted with trophy
+- Total time and sets count
+- Today's muscle balance
+- Smooth transition to bonus recommendation
 
 **Goal Display Logic:**
 - Simple: "Рекорд: 23 → побей: 24" (always shown if history exists)
