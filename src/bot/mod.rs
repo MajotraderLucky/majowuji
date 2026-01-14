@@ -15,7 +15,7 @@ use tracing::{info, error};
 
 use crate::db::{Database, Training, User};
 use crate::exercises::{get_base_exercises, find_exercise, find_exercise_by_name, EXTRA_EXERCISES};
-use crate::ml::{Recommender, ProgressPredictor, GoalCalculator};
+use crate::ml::{Recommender, ProgressPredictor, GoalCalculator, Recommendation};
 use crate::tips;
 
 /// Bot configuration
@@ -148,6 +148,63 @@ fn make_commands_keyboard() -> InlineKeyboardMarkup {
             InlineKeyboardButton::callback("📖 Совет", "cmd:tip"),
         ],
     ])
+}
+
+/// Format bonus recommendation for display
+fn format_bonus_recommendation(rec: &Recommendation, trainings: &[Training]) -> String {
+    let goal_info = GoalCalculator::calculate(trainings, rec.exercise.name)
+        .map(|g| format!("\n\n📊 {}", g.format_short()))
+        .unwrap_or_default();
+
+    let desc = rec.detailed_description
+        .as_deref()
+        .or(rec.exercise.description)
+        .unwrap_or("");
+
+    let focus = rec.focus_cues
+        .as_deref()
+        .or(rec.exercise.focus_cues)
+        .map(|f| format!("\n\n🎯 Фокус: {}", f))
+        .unwrap_or_default();
+
+    let muscles: Vec<_> = rec.exercise.muscle_groups
+        .iter()
+        .map(|m| m.name_ru())
+        .collect();
+    let muscle_info = format!("\n\n💪 Мышцы: {}", muscles.join(", "));
+
+    format!(
+        "{} {}\n\n{}\n\n📖 {}{}{}{}\n\nВыбрать или пропустить?",
+        rec.exercise.category.emoji(),
+        rec.exercise.name,
+        rec.reason,
+        desc,
+        focus,
+        muscle_info,
+        goal_info
+    )
+}
+
+/// Create inline keyboard for bonus exercise selection
+fn make_bonus_keyboard(rec: &Recommendation) -> InlineKeyboardMarkup {
+    let mut rows = vec![
+        vec![
+            InlineKeyboardButton::callback(
+                format!("✓ {}", rec.exercise.name),
+                format!("ex:{}", rec.exercise.id)
+            ),
+        ],
+    ];
+    // Add shadow boxing button if recommended something else
+    if rec.exercise.id != "shadow_boxing" {
+        rows.push(vec![
+            InlineKeyboardButton::callback("☯ бой с тенью", "ex:shadow_boxing")
+        ]);
+    }
+    rows.push(vec![
+        InlineKeyboardButton::callback("Пропустить", "skip_bonus")
+    ]);
+    InlineKeyboardMarkup::new(rows)
 }
 
 /// Create inline keyboard with extra exercises from the book
@@ -1184,6 +1241,30 @@ async fn handle_message(
                     bot.send_message(msg.chat.id, response)
                         .reply_markup(make_commands_keyboard())
                         .await?;
+
+                    // Check if base program is now complete (this was the last exercise)
+                    {
+                        let db = db.lock().await;
+                        let trainings = db.get_trainings_for_user(user_id)?;
+                        let recommender = Recommender::new(trainings.clone());
+
+                        if let Some(summary) = recommender.get_base_summary() {
+                            // Show base program completion summary
+                            let summary_msg = summary.format();
+                            bot.send_message(msg.chat.id, summary_msg).await?;
+
+                            // Show bonus recommendation
+                            if let Some(rec) = recommender.get_recommendation() {
+                                if rec.is_bonus {
+                                    let bonus_msg = format_bonus_recommendation(&rec, &trainings);
+                                    bot.send_message(msg.chat.id, bonus_msg)
+                                        .reply_markup(make_bonus_keyboard(&rec))
+                                        .await?;
+                                }
+                            }
+                        }
+                    }
+
                     dialogue.reset().await?;
                 } else {
                     bot.send_message(msg.chat.id, "Введи пульс (число)").await?;

@@ -150,6 +150,36 @@ impl MuscleTracker {
         report.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by volume descending
         report
     }
+
+    /// Get today's muscle load report (for base program summary)
+    pub fn get_today_report(&self) -> String {
+        let max_volume = self.loads.values()
+            .map(|l| l.today_volume)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+
+        let mut report: Vec<_> = self.loads.values()
+            .filter(|l| l.today_volume > 0) // Only show groups with activity today
+            .map(|load| {
+                let ratio = load.today_volume as f32 / max_volume as f32;
+                let bar = match ratio {
+                    r if r >= 0.75 => "[++++]",
+                    r if r >= 0.50 => "[+++.]",
+                    r if r >= 0.25 => "[++..]",
+                    _ => "[+...]",
+                };
+                (load.group.name_ru(), load.today_volume, bar)
+            })
+            .collect();
+
+        report.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by volume descending
+
+        report.iter()
+            .map(|(name, vol, bar)| format!("{} {}: {}", bar, name, vol))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 #[cfg(test)]

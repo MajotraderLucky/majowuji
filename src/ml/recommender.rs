@@ -347,6 +347,185 @@ impl Recommender {
     pub fn tracker(&self) -> &MuscleTracker {
         &self.tracker
     }
+
+    /// Get base program summary if completed today
+    pub fn get_base_summary(&self) -> Option<BaseProgramSummary> {
+        if !self.base_program_done_today() {
+            return None;
+        }
+
+        let today = Local::now().date_naive();
+        let base_exercises = get_base_exercises();
+
+        let mut exercises = Vec::new();
+        let mut new_records = Vec::new();
+        let mut total_duration_secs: i64 = 0;
+        let mut total_sets: i32 = 0;
+
+        for exercise in base_exercises {
+            // Get today's trainings for this exercise
+            let today_trainings: Vec<_> = self.trainings.iter()
+                .filter(|t| {
+                    t.exercise == exercise.name &&
+                    t.date.with_timezone(&Local).date_naive() == today
+                })
+                .collect();
+
+            if today_trainings.is_empty() {
+                continue;
+            }
+
+            // Calculate stats
+            let sets = today_trainings.len() as i32;
+            total_sets += sets;
+
+            let is_timed = exercise.is_timed;
+
+            let (value, duration) = if is_timed {
+                // For timed exercises: max duration
+                let max_duration = today_trainings.iter()
+                    .filter_map(|t| t.duration_secs)
+                    .max()
+                    .unwrap_or(0);
+                let dur_sum: i64 = today_trainings.iter()
+                    .filter_map(|t| t.duration_secs.map(|d| d as i64))
+                    .sum();
+                total_duration_secs += dur_sum;
+                (max_duration, dur_sum)
+            } else {
+                // For rep exercises: total reps
+                let total_reps: i32 = today_trainings.iter().map(|t| t.reps).sum();
+                let duration: i64 = today_trainings.iter()
+                    .filter_map(|t| t.duration_secs.map(|d| d as i64))
+                    .sum();
+                total_duration_secs += duration;
+                (total_reps, duration)
+            };
+
+            // Check if this is a record
+            let previous_best = self.trainings.iter()
+                .filter(|t| {
+                    t.exercise == exercise.name &&
+                    t.date.with_timezone(&Local).date_naive() < today
+                })
+                .map(|t| if is_timed { t.duration_secs.unwrap_or(0) as i32 } else { t.reps })
+                .max();
+
+            let is_record = previous_best.map_or(false, |prev| value > prev);
+            if is_record {
+                new_records.push(exercise.name.to_string());
+            }
+
+            // Determine role
+            let role = if exercise.id == "taiji_shadow" {
+                Some("разминка".to_string())
+            } else if exercise.id == "taiji_shadow_weapon" {
+                Some("завершение".to_string())
+            } else {
+                None
+            };
+
+            exercises.push(ExerciseSummary {
+                name: exercise.name.to_string(),
+                value,
+                is_timed,
+                is_record,
+                duration_secs: duration,
+                sets,
+                role,
+            });
+        }
+
+        // Get today's muscle balance
+        let muscle_balance = self.tracker.get_today_report();
+
+        Some(BaseProgramSummary {
+            exercises,
+            new_records,
+            total_duration_secs,
+            total_sets,
+            muscle_balance,
+        })
+    }
+}
+
+/// Summary of a single exercise in the base program
+#[derive(Debug, Clone)]
+pub struct ExerciseSummary {
+    pub name: String,
+    pub value: i32,
+    pub is_timed: bool,
+    pub is_record: bool,
+    pub duration_secs: i64,
+    pub sets: i32,
+    pub role: Option<String>,
+}
+
+/// Summary of completed base program
+#[derive(Debug, Clone)]
+pub struct BaseProgramSummary {
+    pub exercises: Vec<ExerciseSummary>,
+    pub new_records: Vec<String>,
+    pub total_duration_secs: i64,
+    pub total_sets: i32,
+    pub muscle_balance: String,
+}
+
+impl BaseProgramSummary {
+    /// Format the summary for display
+    pub fn format(&self) -> String {
+        let mut lines = vec![
+            "🏆 Базовая программа выполнена!\n".to_string(),
+            "📊 Итоги тренировки:\n".to_string(),
+        ];
+
+        for (i, ex) in self.exercises.iter().enumerate() {
+            let value_str = if ex.is_timed {
+                format_duration(ex.value as i64)
+            } else {
+                format!("{} повт.", ex.value)
+            };
+
+            let record = if ex.is_record { " 🏆 РЕКОРД!" } else { "" };
+            let role = ex.role.as_ref().map(|r| format!(" ({})", r)).unwrap_or_default();
+
+            lines.push(format!("{}. {} — {}{}{}", i + 1, ex.name, value_str, record, role));
+        }
+
+        lines.push(String::new());
+        lines.push(format!("⏱ Общее время: {}", format_duration(self.total_duration_secs)));
+        lines.push(format!("💪 Всего подходов: {}", self.total_sets));
+
+        if !self.muscle_balance.is_empty() {
+            lines.push(String::new());
+            lines.push("🎯 Баланс мышц сегодня:\n".to_string());
+            lines.push(self.muscle_balance.clone());
+        }
+
+        lines.push(String::new());
+        lines.push("👏 Отличная работа! Готов к бонусу?".to_string());
+
+        lines.join("\n")
+    }
+}
+
+/// Format duration in human-readable form
+fn format_duration(secs: i64) -> String {
+    if secs < 60 {
+        format!("{}с", secs)
+    } else if secs < 3600 {
+        let m = secs / 60;
+        let s = secs % 60;
+        if s == 0 {
+            format!("{}м", m)
+        } else {
+            format!("{}м {}с", m, s)
+        }
+    } else {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        format!("{}ч {}м", h, m)
+    }
 }
 
 #[cfg(test)]

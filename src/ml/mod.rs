@@ -11,7 +11,7 @@ pub mod predictor;
 pub mod progress_goal;
 
 pub use muscle_tracker::MuscleTracker;
-pub use recommender::Recommender;
+pub use recommender::{Recommender, Recommendation};
 pub use predictor::ProgressPredictor;
 pub use progress_goal::{GoalCalculator, ProgressGoal, GoalConfidence};
 
