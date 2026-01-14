@@ -244,7 +244,7 @@ pub const EXTRA_EXERCISES: &[Exercise] = &[
         name: "пловец",
         category: Category::Core,
         muscle_groups: &[MuscleGroup::Back, MuscleGroup::Shoulders],
-        is_base: false,
+        is_base: true,
         is_timed: false,
         description: Some("Лёжа на животе, попеременно поднимай противоположные руку и ногу, имитируя плавание"),
         focus_cues: Some("Контролируй движение, не раскачивайся. Напрягай спину при каждом подъёме. Дыши ровно"),
