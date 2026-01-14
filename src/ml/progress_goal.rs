@@ -79,6 +79,10 @@ pub struct ProgressGoal {
     pub today_value: i32,
     /// Fatigued muscle groups (for display)
     pub fatigued_muscles: Vec<MuscleGroup>,
+    /// Average over last 7 days
+    pub avg_7_days: Option<f32>,
+    /// Average over last 14 days
+    pub avg_14_days: Option<f32>,
 }
 
 impl ProgressGoal {
@@ -143,9 +147,32 @@ impl ProgressGoal {
 
     /// Format short goal for recommendation
     pub fn format_short(&self) -> String {
+        let mut parts = Vec::new();
+
+        // Today's sets
+        parts.push(format!("Сегодня: {} подх.", self.today_sets));
+
+        // Average (if available)
+        if let Some(avg) = self.avg_7_days {
+            if self.is_timed {
+                parts.push(format!("Сред: {}", Self::format_duration(avg as i32)));
+            } else {
+                parts.push(format!("Сред: {:.0}", avg));
+            }
+        }
+
         if let (Some(best), Some(beat)) = (self.personal_best, self.beat_record_target) {
-            // Check if ML target differs from simple +1
-            let ml_part = if self.target_value != beat {
+            // Record and beat target
+            if self.is_timed {
+                parts.push(format!("Рекорд: {} → побей: {}",
+                    Self::format_duration(best),
+                    Self::format_duration(beat)));
+            } else {
+                parts.push(format!("Рекорд: {} → побей: {}", best, beat));
+            }
+
+            // ML target if different
+            if self.target_value != beat {
                 let explanation = if self.fatigue_factor > 0.1 {
                     "усталость"
                 } else if self.similar_sessions >= 3 {
@@ -154,37 +181,22 @@ impl ProgressGoal {
                     "прогноз"
                 };
                 if self.is_timed {
-                    format!(" | {}: ~{}", explanation, Self::format_duration(self.target_value))
+                    parts.push(format!("{}: ~{}", explanation, Self::format_duration(self.target_value)));
                 } else {
-                    format!(" | {}: ~{}", explanation, self.target_value)
+                    parts.push(format!("{}: ~{}", explanation, self.target_value));
                 }
-            } else {
-                String::new()
-            };
-
-            if self.is_timed {
-                format!("Сегодня: {} подх. | Рекорд: {} → побей: {}{}",
-                    self.today_sets,
-                    Self::format_duration(best),
-                    Self::format_duration(beat),
-                    ml_part)
-            } else {
-                format!("Сегодня: {} подх. | Рекорд: {} → побей: {}{}",
-                    self.today_sets, best, beat, ml_part)
             }
         } else {
             // No history - show default target
             let confidence_label = self.confidence.label();
             if self.is_timed {
-                format!("Сегодня: {} подх. | Цель: ~{} {}",
-                    self.today_sets,
-                    Self::format_duration(self.target_value),
-                    confidence_label)
+                parts.push(format!("Цель: ~{} {}", Self::format_duration(self.target_value), confidence_label));
             } else {
-                format!("Сегодня: {} подх. | Цель: ~{} {}",
-                    self.today_sets, self.target_value, confidence_label)
+                parts.push(format!("Цель: ~{} {}", self.target_value, confidence_label));
             }
         }
+
+        parts.join(" | ")
     }
 
     /// Format duration in human-readable form
@@ -305,6 +317,9 @@ impl GoalCalculator {
             _ => GoalConfidence::High,
         };
 
+        // Calculate averages
+        let (avg_7_days, avg_14_days) = Self::calculate_averages(trainings, exercise_name, is_timed);
+
         Some(ProgressGoal {
             target_value: target_value.max(1),
             personal_best,
@@ -316,7 +331,34 @@ impl GoalCalculator {
             today_sets,
             today_value,
             fatigued_muscles,
+            avg_7_days,
+            avg_14_days,
         })
+    }
+
+    /// Calculate average values for last 7 and 14 days
+    fn calculate_averages(trainings: &[Training], exercise_name: &str, is_timed: bool) -> (Option<f32>, Option<f32>) {
+        let now = Utc::now();
+
+        let calc_avg = |days: i64| -> Option<f32> {
+            let cutoff = now - chrono::Duration::days(days);
+            let recent: Vec<_> = trainings
+                .iter()
+                .filter(|t| t.exercise == exercise_name && t.date >= cutoff)
+                .collect();
+
+            if recent.is_empty() {
+                None
+            } else if is_timed {
+                let sum: i32 = recent.iter().filter_map(|t| t.duration_secs).sum();
+                Some(sum as f32 / recent.len() as f32)
+            } else {
+                let sum: i32 = recent.iter().map(|t| t.reps).sum();
+                Some(sum as f32 / recent.len() as f32)
+            }
+        };
+
+        (calc_avg(7), calc_avg(14))
     }
 
     /// Build session context from today's trainings
@@ -601,6 +643,8 @@ mod tests {
             today_sets: 1,
             today_value: 10,
             fatigued_muscles: vec![MuscleGroup::Chest, MuscleGroup::Triceps],
+            avg_7_days: Some(13.5),
+            avg_14_days: Some(12.8),
         };
 
         let formatted = goal.format();
@@ -623,10 +667,13 @@ mod tests {
             today_sets: 2,
             today_value: 25,
             fatigued_muscles: vec![],
+            avg_7_days: Some(14.2),
+            avg_14_days: Some(13.8),
         };
 
         let formatted = goal.format_short();
         assert!(formatted.contains("Сегодня: 2 подх."), "Format: {}", formatted);
+        assert!(formatted.contains("Сред: 14"), "Should show average: {}", formatted);
         assert!(formatted.contains("Рекорд: 14 → побей: 15"), "Format: {}", formatted);
     }
 
@@ -650,6 +697,8 @@ mod tests {
             today_sets: 1,
             today_value: 120, // 2 minutes
             fatigued_muscles: vec![],
+            avg_7_days: Some(150.0),
+            avg_14_days: Some(145.0),
         };
 
         let formatted = goal.format();
