@@ -17,6 +17,8 @@ pub struct ProgressPredictor {
     r2_score: f64,
     data_points: usize,
     first_date: DateTime<Utc>,
+    /// Cached trainings for average calculations
+    exercise_trainings: Vec<(DateTime<Utc>, i32)>,
 }
 
 /// Prediction result for display
@@ -27,6 +29,12 @@ pub struct Prediction {
     pub month_prediction: f64,
     pub r2_score: f64,
     pub data_points: usize,
+    /// Average reps over last 7 days
+    pub avg_7_days: Option<f64>,
+    /// Average reps over last 14 days
+    pub avg_14_days: Option<f64>,
+    /// Training frequency (sessions per week)
+    pub frequency_per_week: f64,
 }
 
 impl ProgressPredictor {
@@ -85,12 +93,19 @@ impl ProgressPredictor {
         let predictions = model.predict(&dataset);
         let r2_score = predictions.r2(&dataset).unwrap_or(0.0);
 
+        // Cache trainings for average calculations
+        let exercise_trainings: Vec<_> = exercise_trainings
+            .iter()
+            .map(|t| (t.date, t.reps))
+            .collect();
+
         Some(Self {
             slope,
             intercept,
             r2_score,
             data_points: n_samples,
             first_date,
+            exercise_trainings,
         })
     }
 
@@ -122,6 +137,41 @@ impl ProgressPredictor {
         self.data_points
     }
 
+    /// Calculate average reps for trainings within last N days
+    fn avg_last_days(&self, days: i64) -> Option<f64> {
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::days(days);
+
+        let recent: Vec<_> = self.exercise_trainings
+            .iter()
+            .filter(|(date, _)| *date >= cutoff)
+            .collect();
+
+        if recent.is_empty() {
+            None
+        } else {
+            let sum: i32 = recent.iter().map(|(_, reps)| *reps).sum();
+            Some(sum as f64 / recent.len() as f64)
+        }
+    }
+
+    /// Calculate training frequency (sessions per week)
+    fn frequency_per_week(&self) -> f64 {
+        if self.exercise_trainings.len() < 2 {
+            return 0.0;
+        }
+
+        let first = self.exercise_trainings.iter().map(|(d, _)| d).min().unwrap();
+        let last = self.exercise_trainings.iter().map(|(d, _)| d).max().unwrap();
+        let days = (*last - *first).num_days() as f64;
+
+        if days < 1.0 {
+            return self.exercise_trainings.len() as f64;
+        }
+
+        (self.exercise_trainings.len() as f64 / days) * 7.0
+    }
+
     /// Get full prediction for display
     pub fn get_prediction(&self) -> Prediction {
         Prediction {
@@ -130,6 +180,9 @@ impl ProgressPredictor {
             month_prediction: self.predict_reps(30),
             r2_score: self.r2_score,
             data_points: self.data_points,
+            avg_7_days: self.avg_last_days(7),
+            avg_14_days: self.avg_last_days(14),
+            frequency_per_week: self.frequency_per_week(),
         }
     }
 
@@ -137,22 +190,30 @@ impl ProgressPredictor {
     pub fn format_prediction(&self) -> String {
         let pred = self.get_prediction();
 
-        // Format daily progress with sign
+        let mut lines = vec!["--- ML Прогноз ---".to_string()];
+
+        // Averages section (stability metrics)
+        if let Some(avg7) = pred.avg_7_days {
+            lines.push(format!("Среднее за 7 дней: {:.1}", avg7));
+        }
+        if let Some(avg14) = pred.avg_14_days {
+            lines.push(format!("Среднее за 14 дней: {:.1}", avg14));
+        }
+
+        // Training frequency
+        if pred.frequency_per_week > 0.0 {
+            lines.push(format!("Частота: {:.1} раз/нед", pred.frequency_per_week));
+        }
+
+        // Trend section
         let trend_str = if pred.daily_progress >= 0.0 {
             format!("+{:.1}", pred.daily_progress)
         } else {
             format!("{:.1}", pred.daily_progress)
         };
+        lines.push(format!("Тренд: {} повт./день", trend_str));
 
-        format!(
-            "--- ML Прогноз ---\n\
-            Тренд: {} повт./день\n\
-            Через неделю: ~{:.0} повторений\n\
-            Через месяц: ~{:.0} повторений",
-            trend_str,
-            pred.week_prediction.max(0.0),
-            pred.month_prediction.max(0.0)
-        )
+        lines.join("\n")
     }
 }
 
@@ -271,10 +332,10 @@ mod tests {
         let predictor = ProgressPredictor::train(&trainings, "pushups").unwrap();
         let formatted = predictor.format_prediction();
 
-        assert!(formatted.contains("ML Прогноз"));
-        assert!(formatted.contains("Тренд:"));
-        assert!(formatted.contains("неделю"));
-        assert!(formatted.contains("месяц"));
+        assert!(formatted.contains("ML Прогноз"), "Format: {}", formatted);
+        assert!(formatted.contains("Тренд:"), "Format: {}", formatted);
+        assert!(formatted.contains("Среднее за"), "Format: {}", formatted);
+        assert!(formatted.contains("Частота:"), "Format: {}", formatted);
     }
 
     #[test]
