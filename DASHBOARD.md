@@ -77,6 +77,10 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 | Include Cargo.lock for reproducible builds | [+] Done    |
 | Fix "NEW RECORD" bug on repeated result    | [+] Done    |
 | Show both goals: simple +1 and ML target   | [+] Done    |
+| Add average metrics (7/14 days)            | [+] Done    |
+| Restructure base program (8 exercises)     | [+] Done    |
+| Add taiji_shadow_weapon (cooldown)         | [+] Done    |
+| Add swimmer to base program                | [+] Done    |
 
 **Goal Display Logic:**
 - Simple: "Рекорд: 23 → побей: 24" (always shown if history exists)
@@ -126,26 +130,36 @@ Bot collects the following data for ML analysis:
 
 Each exercise is mapped to muscle groups for balance tracking:
 
-| Group      | Description      | Exercises                              |
-|------------|------------------|----------------------------------------|
-| chest      | Грудные          | pushups_fist, pushups_handles          |
-| shoulders  | Плечи            | pushups, plank, squats_strikes         |
-| triceps    | Трицепс          | pushups_fist, pushups_handles          |
-| back       | Спина            | let_me_in, shelf_pullup                |
-| biceps     | Бицепс           | let_me_in, shelf_pullup                |
-| core       | Кор              | jackknife, plank, squats, pushups      |
-| quads      | Квадрицепсы      | squats_strikes                         |
-| glutes     | Ягодицы          | squats_strikes, romanian_deadlift      |
-| hamstrings | Бицепс бедра     | romanian_deadlift                      |
-| calves     | Икры             | calf_raises                            |
-| full_body  | Всё тело         | taiji_shadow, form_24, silk_reeling    |
+| Group      | Description      | Exercises                                                |
+|------------|------------------|----------------------------------------------------------|
+| chest      | Грудные          | pushups_fist, pushups_handles                            |
+| shoulders  | Плечи            | pushups, plank, squats_strikes                           |
+| triceps    | Трицепс          | pushups_fist, pushups_handles                            |
+| back       | Спина            | let_me_in, shelf_pullup                                  |
+| biceps     | Бицепс           | let_me_in, shelf_pullup                                  |
+| core       | Кор              | jackknife, plank, squats, pushups                        |
+| quads      | Квадрицепсы      | squats_strikes                                           |
+| glutes     | Ягодицы          | squats_strikes, romanian_deadlift                        |
+| hamstrings | Бицепс бедра     | romanian_deadlift                                        |
+| calves     | Икры             | calf_raises                                              |
+| full_body  | Всё тело         | taiji_shadow, taiji_shadow_weapon, form_24, silk_reeling |
 
 ## Book Exercises System
 
 Exercises from "Сам себе тренер" (You Are Your Own Gym) are offered as bonus after completing the base program for the day.
 
-**Base Program (6 exercises):**
-- pushups_fist, pushups_handles, jackknife, plank_elbows, squats_strikes, taiji_shadow
+**Base Program (8 exercises with fixed order):**
+
+| #   | Exercise             | Name                           | Role       |
+|-----|----------------------|--------------------------------|------------|
+| 1   | taiji_shadow         | тайцзи бой с тенью             | warmup     |
+| 2   | pushups_fist         | отжимания на кулаках           | middle     |
+| 3   | pushups_handles      | отжимания с ручками            | middle     |
+| 4   | jackknife            | пресс складной нож             | middle     |
+| 5   | plank_elbows         | стойка на локтях               | middle     |
+| 6   | squats_strikes       | приседания с ударами           | middle     |
+| 7   | swimmer              | пловец                         | middle     |
+| 8   | taiji_shadow_weapon  | тайцзи бой с тенью с оружием   | cooldown   |
 
 **Bonus Exercises (from book):**
 
@@ -159,9 +173,10 @@ Exercises from "Сам себе тренер" (You Are Your Own Gym) are offered
 | romanian_deadlift  | hamstrings, glutes, core  | Румынская тяга на одной ноге                   |
 
 **How it works:**
-1. Bot recommends base exercises until all 6 are done today
-2. After base program complete, bot offers bonus with description
-3. User can skip bonus or choose from book exercises anytime via button
+1. Bot always recommends taiji_shadow first (warmup)
+2. Then middle exercises sorted by muscle balance
+3. taiji_shadow_weapon recommended last (cooldown)
+4. After all 8 base exercises done, bot offers bonus with description
 
 ## Multi-user System
 
