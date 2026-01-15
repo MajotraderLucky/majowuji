@@ -9,6 +9,9 @@ use chrono::{DateTime, FixedOffset, Utc};
 use crate::db::Training;
 use crate::exercises::{find_exercise_by_name, MuscleGroup};
 
+/// Days to consolidate a new record before challenging to beat it
+const RECORD_CONSOLIDATION_DAYS: i64 = 7;
+
 /// Moscow timezone offset (UTC+3)
 fn moscow_tz() -> FixedOffset {
     FixedOffset::east_opt(3 * 3600).unwrap()
@@ -83,6 +86,10 @@ pub struct ProgressGoal {
     pub avg_7_days: Option<f32>,
     /// Average over last 14 days
     pub avg_14_days: Option<f32>,
+    /// Date when personal best was achieved
+    pub record_date: Option<DateTime<Utc>>,
+    /// True if record was set < 7 days ago (consolidation period)
+    pub is_consolidating: bool,
 }
 
 impl ProgressGoal {
@@ -98,14 +105,25 @@ impl ProgressGoal {
         };
         lines.push(today_str);
 
-        // Personal best and beat target (simple goal)
-        if let (Some(best), Some(beat)) = (self.personal_best, self.beat_record_target) {
-            if self.is_timed {
-                lines.push(format!("  Рекорд: {} → побей: {}",
-                    Self::format_duration(best),
-                    Self::format_duration(beat)));
-            } else {
-                lines.push(format!("  Рекорд: {} → побей: {}", best, beat));
+        // Personal best - with consolidation or beat target
+        if let Some(best) = self.personal_best {
+            if self.is_consolidating {
+                // Consolidation period - show record without challenge
+                if self.is_timed {
+                    lines.push(format!("  Рекорд: {} (закрепляем)",
+                        Self::format_duration(best)));
+                } else {
+                    lines.push(format!("  Рекорд: {} (закрепляем)", best));
+                }
+            } else if let Some(beat) = self.beat_record_target {
+                // Normal mode - challenge to beat
+                if self.is_timed {
+                    lines.push(format!("  Рекорд: {} → побей: {}",
+                        Self::format_duration(best),
+                        Self::format_duration(beat)));
+                } else {
+                    lines.push(format!("  Рекорд: {} → побей: {}", best, beat));
+                }
             }
         }
 
@@ -161,29 +179,39 @@ impl ProgressGoal {
             }
         }
 
-        if let (Some(best), Some(beat)) = (self.personal_best, self.beat_record_target) {
-            // Record and beat target
-            if self.is_timed {
-                parts.push(format!("Рекорд: {} → побей: {}",
-                    Self::format_duration(best),
-                    Self::format_duration(beat)));
-            } else {
-                parts.push(format!("Рекорд: {} → побей: {}", best, beat));
-            }
-
-            // ML target if different
-            if self.target_value != beat {
-                let explanation = if self.fatigue_factor > 0.1 {
-                    "усталость"
-                } else if self.similar_sessions >= 3 {
-                    "ML"
-                } else {
-                    "прогноз"
-                };
+        if let Some(best) = self.personal_best {
+            if self.is_consolidating {
+                // Consolidation period - show record without challenge
                 if self.is_timed {
-                    parts.push(format!("{}: ~{}", explanation, Self::format_duration(self.target_value)));
+                    parts.push(format!("Рекорд: {} (закрепляем)",
+                        Self::format_duration(best)));
                 } else {
-                    parts.push(format!("{}: ~{}", explanation, self.target_value));
+                    parts.push(format!("Рекорд: {} (закрепляем)", best));
+                }
+            } else if let Some(beat) = self.beat_record_target {
+                // Record and beat target
+                if self.is_timed {
+                    parts.push(format!("Рекорд: {} → побей: {}",
+                        Self::format_duration(best),
+                        Self::format_duration(beat)));
+                } else {
+                    parts.push(format!("Рекорд: {} → побей: {}", best, beat));
+                }
+
+                // ML target if different
+                if self.target_value != beat {
+                    let explanation = if self.fatigue_factor > 0.1 {
+                        "усталость"
+                    } else if self.similar_sessions >= 3 {
+                        "ML"
+                    } else {
+                        "прогноз"
+                    };
+                    if self.is_timed {
+                        parts.push(format!("{}: ~{}", explanation, Self::format_duration(self.target_value)));
+                    } else {
+                        parts.push(format!("{}: ~{}", explanation, self.target_value));
+                    }
                 }
             }
         } else {
@@ -225,6 +253,45 @@ impl GoalCalculator {
     /// Fatigue sensitivity: 50 reps = ~63% fatigue contribution
     const FATIGUE_K: f32 = 50.0;
 
+    /// Find personal best value and the date when it was achieved
+    fn find_personal_best_with_date(
+        trainings: &[Training],
+        exercise_name: &str,
+        is_timed: bool,
+    ) -> Option<(i32, DateTime<Utc>)> {
+        let filtered: Vec<_> = trainings
+            .iter()
+            .filter(|t| t.exercise == exercise_name)
+            .collect();
+
+        if filtered.is_empty() {
+            return None;
+        }
+
+        // Find the best value
+        let best_value = if is_timed {
+            filtered.iter().filter_map(|t| t.duration_secs).max()?
+        } else {
+            filtered.iter().map(|t| t.reps).max()?
+        };
+
+        // Find the LATEST date when this best was achieved
+        // (if user achieved the same record multiple times, use the most recent)
+        let best_date = filtered
+            .iter()
+            .filter(|t| {
+                if is_timed {
+                    t.duration_secs == Some(best_value)
+                } else {
+                    t.reps == best_value
+                }
+            })
+            .map(|t| t.date)
+            .max()?;
+
+        Some((best_value, best_date))
+    }
+
     /// Calculate fatigue-aware goal for an exercise
     pub fn calculate(
         trainings: &[Training],
@@ -262,23 +329,24 @@ impl GoalCalculator {
             today_exercises.iter().map(|t| t.reps).sum()
         };
 
-        // Find personal best for this exercise
-        let personal_best: Option<i32> = if is_timed {
-            trainings
-                .iter()
-                .filter(|t| t.exercise == exercise_name)
-                .filter_map(|t| t.duration_secs)
-                .max()
-        } else {
-            trainings
-                .iter()
-                .filter(|t| t.exercise == exercise_name)
-                .map(|t| t.reps)
-                .max()
-        };
+        // Find personal best with date for this exercise
+        let (personal_best, record_date) = Self::find_personal_best_with_date(
+            trainings, exercise_name, is_timed
+        ).map(|(v, d)| (Some(v), Some(d)))
+        .unwrap_or((None, None));
 
-        // Simple target: personal best + 1 (both for reps and seconds)
-        let beat_record_target = personal_best.map(|best| best + 1);
+        // Check if in consolidation period (record set < 7 days ago)
+        let now = Utc::now();
+        let is_consolidating = record_date
+            .map(|date| (now - date).num_days() < RECORD_CONSOLIDATION_DAYS)
+            .unwrap_or(false);
+
+        // Simple target: personal best + 1, but only if NOT in consolidation period
+        let beat_record_target = if is_consolidating {
+            None  // Don't challenge during consolidation
+        } else {
+            personal_best.map(|best| best + 1)
+        };
 
         // Find similar historical sessions for fatigue-adjusted target
         let similar = Self::find_similar_sessions(trainings, exercise_name, &current_context, is_timed);
@@ -328,6 +396,8 @@ impl GoalCalculator {
             fatigued_muscles,
             avg_7_days,
             avg_14_days,
+            record_date,
+            is_consolidating,
         })
     }
 
@@ -640,6 +710,8 @@ mod tests {
             fatigued_muscles: vec![MuscleGroup::Chest, MuscleGroup::Triceps],
             avg_7_days: Some(13.5),
             avg_14_days: Some(12.8),
+            record_date: Some(Utc::now() - chrono::Duration::days(10)), // Old record
+            is_consolidating: false,
         };
 
         let formatted = goal.format();
@@ -664,6 +736,8 @@ mod tests {
             fatigued_muscles: vec![],
             avg_7_days: Some(14.2),
             avg_14_days: Some(13.8),
+            record_date: Some(Utc::now() - chrono::Duration::days(10)), // Old record
+            is_consolidating: false,
         };
 
         let formatted = goal.format_short();
@@ -694,6 +768,8 @@ mod tests {
             fatigued_muscles: vec![],
             avg_7_days: Some(150.0),
             avg_14_days: Some(145.0),
+            record_date: Some(Utc::now() - chrono::Duration::days(10)), // Old record
+            is_consolidating: false,
         };
 
         let formatted = goal.format();
@@ -712,5 +788,153 @@ mod tests {
         assert_eq!(ProgressGoal::format_duration(90), "1м 30с");
         assert_eq!(ProgressGoal::format_duration(180), "3м");
         assert_eq!(ProgressGoal::format_duration(169), "2м 49с");
+    }
+
+    // ===== Consolidation Period Tests =====
+
+    #[test]
+    fn test_find_personal_best_with_date_no_history() {
+        let trainings: Vec<Training> = vec![];
+        let result = GoalCalculator::find_personal_best_with_date(
+            &trainings, "отжимания на кулаках", false
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_personal_best_with_date_single_record() {
+        let trainings = vec![
+            create_training("отжимания на кулаках", 15, 3),
+        ];
+        let result = GoalCalculator::find_personal_best_with_date(
+            &trainings, "отжимания на кулаках", false
+        );
+        assert!(result.is_some());
+        let (best, _date) = result.unwrap();
+        assert_eq!(best, 15);
+    }
+
+    #[test]
+    fn test_find_personal_best_with_date_multiple_same_record() {
+        // Same value achieved twice - should return most recent date
+        let trainings = vec![
+            create_training("отжимания на кулаках", 15, 10), // Old
+            create_training("отжимания на кулаках", 15, 2),  // Recent - same value
+        ];
+        let result = GoalCalculator::find_personal_best_with_date(
+            &trainings, "отжимания на кулаках", false
+        );
+        assert!(result.is_some());
+        let (best, date) = result.unwrap();
+        assert_eq!(best, 15);
+        // Should return the MOST RECENT date
+        let days_ago = (Utc::now() - date).num_days();
+        assert!(days_ago <= 3, "Should be recent date, got {} days ago", days_ago);
+    }
+
+    #[test]
+    fn test_consolidation_period_recent_record() {
+        // Record set 3 days ago - should be in consolidation
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20, 3),
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(g.is_consolidating, "Record from 3 days ago should be consolidating");
+        assert!(g.beat_record_target.is_none(), "No beat target during consolidation");
+        assert_eq!(g.personal_best, Some(20));
+    }
+
+    #[test]
+    fn test_consolidation_period_old_record() {
+        // Record set 10 days ago - should NOT be in consolidation
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20, 10),
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(!g.is_consolidating, "Record from 10 days ago should not be consolidating");
+        assert_eq!(g.beat_record_target, Some(21));
+    }
+
+    #[test]
+    fn test_consolidation_boundary_exactly_7_days() {
+        // Record set exactly 7 days ago - should NOT be in consolidation (< 7, not <=)
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20, 7),
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(!g.is_consolidating, "Record from exactly 7 days ago should not be consolidating");
+        assert_eq!(g.beat_record_target, Some(21));
+    }
+
+    #[test]
+    fn test_consolidation_format_during_period() {
+        let goal = ProgressGoal {
+            target_value: 20,
+            personal_best: Some(20),
+            beat_record_target: None,
+            is_timed: false,
+            confidence: GoalConfidence::High,
+            fatigue_factor: 0.0,
+            similar_sessions: 5,
+            today_sets: 1,
+            today_value: 18,
+            fatigued_muscles: vec![],
+            avg_7_days: Some(19.0),
+            avg_14_days: Some(18.0),
+            record_date: Some(Utc::now() - chrono::Duration::days(2)),
+            is_consolidating: true,
+        };
+
+        let formatted = goal.format();
+        assert!(formatted.contains("Рекорд: 20 (закрепляем)"), "Format: {}", formatted);
+        assert!(!formatted.contains("побей"), "Should not contain 'побей': {}", formatted);
+    }
+
+    #[test]
+    fn test_consolidation_format_short_during_period() {
+        let goal = ProgressGoal {
+            target_value: 20,
+            personal_best: Some(20),
+            beat_record_target: None,
+            is_timed: false,
+            confidence: GoalConfidence::High,
+            fatigue_factor: 0.0,
+            similar_sessions: 5,
+            today_sets: 0,
+            today_value: 0,
+            fatigued_muscles: vec![],
+            avg_7_days: Some(19.0),
+            avg_14_days: Some(18.0),
+            record_date: Some(Utc::now() - chrono::Duration::days(2)),
+            is_consolidating: true,
+        };
+
+        let formatted = goal.format_short();
+        assert!(formatted.contains("Рекорд: 20 (закрепляем)"), "Short format: {}", formatted);
+        assert!(!formatted.contains("побей"), "Should not contain 'побей': {}", formatted);
+    }
+
+    #[test]
+    fn test_consolidation_timed_exercise() {
+        // Timed exercise (plank) - record 3 days ago
+        let mut training = create_training("стойка на локтях", 1, 3);
+        training.duration_secs = Some(120); // 2 minutes
+
+        let trainings = vec![training];
+        let goal = GoalCalculator::calculate(&trainings, "стойка на локтях");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(g.is_consolidating, "Timed exercise should also consolidate");
+        assert!(g.is_timed);
+        assert_eq!(g.personal_best, Some(120));
+
+        let formatted = g.format();
+        assert!(formatted.contains("2м (закрепляем)"), "Timed format: {}", formatted);
     }
 }

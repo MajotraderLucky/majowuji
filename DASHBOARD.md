@@ -69,7 +69,13 @@ Book location: `docs/you-are-your-own-gym.txt`
 
 See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 
-## Recent Changes (2026-01-14)
+## Recent Changes (2026-01-15)
+
+| Change                                     | Status      |
+|--------------------------------------------|-------------|
+| 7-day record consolidation period          | [+] Done    |
+
+## Changes (2026-01-14)
 
 | Change                                     | Status      |
 |--------------------------------------------|-------------|
@@ -93,8 +99,9 @@ After completing the last base exercise, shows:
 - Smooth transition to bonus recommendation
 
 **Goal Display Logic:**
-- Simple: "Рекорд: 23 → побей: 24" (always shown if history exists)
-- ML: "~20 (усталость грудные)" (shown when differs from simple +1)
+- Consolidation: "Рекорд: 23 (закрепляем)" - shown if record < 7 days old
+- Simple: "Рекорд: 23 → побей: 24" - shown if record >= 7 days old
+- ML: "~20 (усталость грудные)" - shown when differs from simple +1
 
 ## Backlog
 
