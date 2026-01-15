@@ -74,6 +74,8 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment instructions.
 | Change                                     | Status      |
 |--------------------------------------------|-------------|
 | 7-day record consolidation period          | [+] Done    |
+| Show days remaining in consolidation       | [+] Done    |
+| Auto-extend if record not confirmed        | [+] Done    |
 
 ## Changes (2026-01-14)
 
@@ -99,8 +101,9 @@ After completing the last base exercise, shows:
 - Smooth transition to bonus recommendation
 
 **Goal Display Logic:**
-- Consolidation: "Рекорд: 23 (закрепляем)" - shown if record < 7 days old
-- Simple: "Рекорд: 23 → побей: 24" - shown if record >= 7 days old
+- Consolidation: "Рекорд: 23 (закрепляем, 5 дн.)" - shown with days remaining
+- Challenge: "Рекорд: 23 → побей: 24" - shown after record confirmed in 7-day window
+- Auto-extend: If record not reached in 7 days, consolidation extends another 7 days
 - ML: "~20 (усталость грудные)" - shown when differs from simple +1
 
 ## Backlog
