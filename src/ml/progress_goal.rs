@@ -88,8 +88,12 @@ pub struct ProgressGoal {
     pub avg_14_days: Option<f32>,
     /// Date when personal best was achieved
     pub record_date: Option<DateTime<Utc>>,
-    /// True if record was set < 7 days ago (consolidation period)
+    /// True if in consolidation period (need to confirm record level)
     pub is_consolidating: bool,
+    /// Days remaining in current consolidation window
+    pub consolidation_days_left: Option<i32>,
+    /// True if user reached record level within current 7-day window
+    pub record_confirmed: bool,
 }
 
 impl ProgressGoal {
@@ -108,15 +112,18 @@ impl ProgressGoal {
         // Personal best - with consolidation or beat target
         if let Some(best) = self.personal_best {
             if self.is_consolidating {
-                // Consolidation period - show record without challenge
+                // Consolidation period - show record with days remaining
+                let days_str = self.consolidation_days_left
+                    .map(|d| format!(", {} дн.", d))
+                    .unwrap_or_default();
                 if self.is_timed {
-                    lines.push(format!("  Рекорд: {} (закрепляем)",
-                        Self::format_duration(best)));
+                    lines.push(format!("  Рекорд: {} (закрепляем{})",
+                        Self::format_duration(best), days_str));
                 } else {
-                    lines.push(format!("  Рекорд: {} (закрепляем)", best));
+                    lines.push(format!("  Рекорд: {} (закрепляем{})", best, days_str));
                 }
             } else if let Some(beat) = self.beat_record_target {
-                // Normal mode - challenge to beat
+                // Confirmed - challenge to beat
                 if self.is_timed {
                     lines.push(format!("  Рекорд: {} → побей: {}",
                         Self::format_duration(best),
@@ -181,15 +188,18 @@ impl ProgressGoal {
 
         if let Some(best) = self.personal_best {
             if self.is_consolidating {
-                // Consolidation period - show record without challenge
+                // Consolidation period - show record with days remaining
+                let days_str = self.consolidation_days_left
+                    .map(|d| format!(", {} дн.", d))
+                    .unwrap_or_default();
                 if self.is_timed {
-                    parts.push(format!("Рекорд: {} (закрепляем)",
-                        Self::format_duration(best)));
+                    parts.push(format!("Рекорд: {} (закрепляем{})",
+                        Self::format_duration(best), days_str));
                 } else {
-                    parts.push(format!("Рекорд: {} (закрепляем)", best));
+                    parts.push(format!("Рекорд: {} (закрепляем{})", best, days_str));
                 }
             } else if let Some(beat) = self.beat_record_target {
-                // Record and beat target
+                // Confirmed - challenge to beat
                 if self.is_timed {
                     parts.push(format!("Рекорд: {} → побей: {}",
                         Self::format_duration(best),
@@ -275,8 +285,8 @@ impl GoalCalculator {
             filtered.iter().map(|t| t.reps).max()?
         };
 
-        // Find the LATEST date when this best was achieved
-        // (if user achieved the same record multiple times, use the most recent)
+        // Find the EARLIEST date when this best was achieved (breakthrough date)
+        // For consolidation: we track when the record was first set, not repeated
         let best_date = filtered
             .iter()
             .filter(|t| {
@@ -287,9 +297,30 @@ impl GoalCalculator {
                 }
             })
             .map(|t| t.date)
-            .max()?;
+            .min()?;
 
         Some((best_value, best_date))
+    }
+
+    /// Check if user reached personal_best within the last N days
+    fn has_confirmation_in_window(
+        trainings: &[Training],
+        exercise_name: &str,
+        personal_best: i32,
+        is_timed: bool,
+        window_days: i64,
+    ) -> bool {
+        let cutoff = Utc::now() - chrono::Duration::days(window_days);
+        trainings
+            .iter()
+            .filter(|t| t.exercise == exercise_name && t.date >= cutoff)
+            .any(|t| {
+                if is_timed {
+                    t.duration_secs.unwrap_or(0) >= personal_best
+                } else {
+                    t.reps >= personal_best
+                }
+            })
     }
 
     /// Calculate fatigue-aware goal for an exercise
@@ -335,13 +366,41 @@ impl GoalCalculator {
         ).map(|(v, d)| (Some(v), Some(d)))
         .unwrap_or((None, None));
 
-        // Check if in consolidation period (record set < 7 days ago)
+        // Enhanced consolidation logic:
+        // - Must confirm (reach) record level within 7-day window to unlock progression
+        // - If not confirmed within 7 days, extend consolidation another 7 days
         let now = Utc::now();
-        let is_consolidating = record_date
-            .map(|date| (now - date).num_days() < RECORD_CONSOLIDATION_DAYS)
+        let days_since_record = record_date
+            .map(|date| (now - date).num_days())
+            .unwrap_or(0);
+
+        // Check if user confirmed the record in the current 7-day window
+        let record_confirmed = personal_best
+            .map(|pb| Self::has_confirmation_in_window(
+                trainings, exercise_name, pb, is_timed, RECORD_CONSOLIDATION_DAYS
+            ))
             .unwrap_or(false);
 
-        // Simple target: personal best + 1, but only if NOT in consolidation period
+        // Consolidation logic:
+        // - First 7 days after record: always consolidating (stabilize the new level)
+        // - After 7 days: if confirmed in window → can challenge, else → extend consolidation
+        let is_consolidating = if personal_best.is_none() {
+            false  // No record yet - no consolidation
+        } else if days_since_record < RECORD_CONSOLIDATION_DAYS {
+            true  // Within initial 7-day window
+        } else {
+            !record_confirmed  // After 7 days: consolidate if NOT confirmed in last 7 days
+        };
+
+        // Calculate days left in current consolidation window
+        let consolidation_days_left = if is_consolidating {
+            let days_in_window = days_since_record % RECORD_CONSOLIDATION_DAYS;
+            Some((RECORD_CONSOLIDATION_DAYS - days_in_window) as i32)
+        } else {
+            None
+        };
+
+        // Challenge only if NOT consolidating
         let beat_record_target = if is_consolidating {
             None  // Don't challenge during consolidation
         } else {
@@ -398,6 +457,8 @@ impl GoalCalculator {
             avg_14_days,
             record_date,
             is_consolidating,
+            consolidation_days_left,
+            record_confirmed,
         })
     }
 
@@ -712,6 +773,8 @@ mod tests {
             avg_14_days: Some(12.8),
             record_date: Some(Utc::now() - chrono::Duration::days(10)), // Old record
             is_consolidating: false,
+            consolidation_days_left: None,
+            record_confirmed: true,
         };
 
         let formatted = goal.format();
@@ -738,6 +801,8 @@ mod tests {
             avg_14_days: Some(13.8),
             record_date: Some(Utc::now() - chrono::Duration::days(10)), // Old record
             is_consolidating: false,
+            consolidation_days_left: None,
+            record_confirmed: true,
         };
 
         let formatted = goal.format_short();
@@ -770,6 +835,8 @@ mod tests {
             avg_14_days: Some(145.0),
             record_date: Some(Utc::now() - chrono::Duration::days(10)), // Old record
             is_consolidating: false,
+            consolidation_days_left: None,
+            record_confirmed: true,
         };
 
         let formatted = goal.format();
@@ -816,10 +883,10 @@ mod tests {
 
     #[test]
     fn test_find_personal_best_with_date_multiple_same_record() {
-        // Same value achieved twice - should return most recent date
+        // Same value achieved twice - should return EARLIEST date (breakthrough)
         let trainings = vec![
-            create_training("отжимания на кулаках", 15, 10), // Old
-            create_training("отжимания на кулаках", 15, 2),  // Recent - same value
+            create_training("отжимания на кулаках", 15, 10), // Old - first breakthrough
+            create_training("отжимания на кулаках", 15, 2),  // Recent - confirmation
         ];
         let result = GoalCalculator::find_personal_best_with_date(
             &trainings, "отжимания на кулаках", false
@@ -827,9 +894,9 @@ mod tests {
         assert!(result.is_some());
         let (best, date) = result.unwrap();
         assert_eq!(best, 15);
-        // Should return the MOST RECENT date
+        // Should return the EARLIEST date (breakthrough date)
         let days_ago = (Utc::now() - date).num_days();
-        assert!(days_ago <= 3, "Should be recent date, got {} days ago", days_ago);
+        assert!(days_ago >= 9, "Should be earliest date (breakthrough), got {} days ago", days_ago);
     }
 
     #[test]
@@ -848,28 +915,32 @@ mod tests {
 
     #[test]
     fn test_consolidation_period_old_record() {
-        // Record set 10 days ago - should NOT be in consolidation
+        // Record set 10 days ago, confirmed within last 7 days → should NOT be consolidating
         let trainings = vec![
-            create_training("отжимания на кулаках", 20, 10),
+            create_training("отжимания на кулаках", 20, 10), // Record breakthrough
+            create_training("отжимания на кулаках", 20, 3),  // Confirmation within window
         ];
         let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
         assert!(goal.is_some());
         let g = goal.unwrap();
-        assert!(!g.is_consolidating, "Record from 10 days ago should not be consolidating");
+        assert!(!g.is_consolidating, "Should unlock after confirmation in window");
         assert_eq!(g.beat_record_target, Some(21));
+        assert!(g.record_confirmed);
     }
 
     #[test]
     fn test_consolidation_boundary_exactly_7_days() {
-        // Record set exactly 7 days ago - should NOT be in consolidation (< 7, not <=)
+        // Record set exactly 7 days ago, confirmed within last 7 days → should NOT be consolidating
         let trainings = vec![
-            create_training("отжимания на кулаках", 20, 7),
+            create_training("отжимания на кулаках", 20, 7), // Record breakthrough (boundary)
+            create_training("отжимания на кулаках", 20, 2), // Confirmation within window
         ];
         let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
         assert!(goal.is_some());
         let g = goal.unwrap();
-        assert!(!g.is_consolidating, "Record from exactly 7 days ago should not be consolidating");
+        assert!(!g.is_consolidating, "Should unlock after confirmation (7 days + confirmed)");
         assert_eq!(g.beat_record_target, Some(21));
+        assert!(g.record_confirmed);
     }
 
     #[test]
@@ -889,10 +960,12 @@ mod tests {
             avg_14_days: Some(18.0),
             record_date: Some(Utc::now() - chrono::Duration::days(2)),
             is_consolidating: true,
+            consolidation_days_left: Some(5),
+            record_confirmed: false,
         };
 
         let formatted = goal.format();
-        assert!(formatted.contains("Рекорд: 20 (закрепляем)"), "Format: {}", formatted);
+        assert!(formatted.contains("Рекорд: 20 (закрепляем, 5 дн.)"), "Format: {}", formatted);
         assert!(!formatted.contains("побей"), "Should not contain 'побей': {}", formatted);
     }
 
@@ -913,10 +986,12 @@ mod tests {
             avg_14_days: Some(18.0),
             record_date: Some(Utc::now() - chrono::Duration::days(2)),
             is_consolidating: true,
+            consolidation_days_left: Some(5),
+            record_confirmed: false,
         };
 
         let formatted = goal.format_short();
-        assert!(formatted.contains("Рекорд: 20 (закрепляем)"), "Short format: {}", formatted);
+        assert!(formatted.contains("Рекорд: 20 (закрепляем, 5 дн.)"), "Short format: {}", formatted);
         assert!(!formatted.contains("побей"), "Should not contain 'побей': {}", formatted);
     }
 
@@ -933,8 +1008,72 @@ mod tests {
         assert!(g.is_consolidating, "Timed exercise should also consolidate");
         assert!(g.is_timed);
         assert_eq!(g.personal_best, Some(120));
+        assert_eq!(g.consolidation_days_left, Some(4)); // 7 - 3 = 4 days left
+        assert!(g.record_confirmed); // Record was confirmed on the same day it was set
 
         let formatted = g.format();
-        assert!(formatted.contains("2м (закрепляем)"), "Timed format: {}", formatted);
+        assert!(formatted.contains("2м (закрепляем, 4 дн.)"), "Timed format: {}", formatted);
+    }
+
+    // ===== New tests for enhanced consolidation =====
+
+    #[test]
+    fn test_consolidation_confirmed_unlocks() {
+        // Record set 10 days ago, confirmed 3 days ago → should unlock challenge
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20, 10), // Record set 10 days ago
+            create_training("отжимания на кулаках", 20, 3),  // Confirmed 3 days ago
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(!g.is_consolidating, "Should unlock after confirmation in window");
+        assert_eq!(g.beat_record_target, Some(21));
+        assert!(g.record_confirmed);
+    }
+
+    #[test]
+    fn test_consolidation_not_confirmed_extends() {
+        // Record set 10 days ago, never confirmed since → extend consolidation
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20, 10), // Record 10 days ago
+            create_training("отжимания на кулаках", 15, 5),  // Below record
+            create_training("отжимания на кулаках", 18, 2),  // Below record
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(g.is_consolidating, "Should extend consolidation if not confirmed");
+        assert!(g.beat_record_target.is_none());
+        assert!(!g.record_confirmed);
+        assert!(g.consolidation_days_left.is_some());
+    }
+
+    #[test]
+    fn test_consolidation_days_countdown() {
+        // Record set 2 days ago → 5 days left
+        let trainings = vec![
+            create_training("отжимания на кулаках", 20, 2),
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(g.is_consolidating);
+        assert_eq!(g.consolidation_days_left, Some(5)); // 7 - 2 = 5
+    }
+
+    #[test]
+    fn test_consolidation_new_record_resets() {
+        // Old record, then new record yesterday → should consolidate new record
+        let trainings = vec![
+            create_training("отжимания на кулаках", 15, 10), // Old record
+            create_training("отжимания на кулаках", 20, 1),  // New record yesterday
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert_eq!(g.personal_best, Some(20));
+        assert!(g.is_consolidating, "Should consolidate new record");
+        assert_eq!(g.consolidation_days_left, Some(6)); // 7 - 1 = 6
     }
 }
