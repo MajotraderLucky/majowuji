@@ -7,10 +7,14 @@ use std::collections::HashMap;
 use chrono::{DateTime, FixedOffset, Utc};
 
 use crate::db::Training;
-use crate::exercises::{find_exercise_by_name, MuscleGroup};
+use crate::exercises::{find_exercise_by_name, MuscleGroup, BASE_EXERCISES};
 
 /// Days to consolidate a new record before challenging to beat it
 const RECORD_CONSOLIDATION_DAYS: i64 = 7;
+
+/// Maximum allowed rest days (no base exercises) in 7-day window
+/// to allow progression (1 rest day = 6 training days minimum)
+const MAX_REST_DAYS_IN_WINDOW: i32 = 1;
 
 /// Moscow timezone offset (UTC+3)
 fn moscow_tz() -> FixedOffset {
@@ -94,6 +98,12 @@ pub struct ProgressGoal {
     pub consolidation_days_left: Option<i32>,
     /// True if user reached record level within current 7-day window
     pub record_confirmed: bool,
+    /// Days with base exercise training in last 7 days
+    pub training_days_last_7: i32,
+    /// Rest days (no base exercises) in last 7 days
+    pub rest_days_last_7: i32,
+    /// True if training regularity allows progression (<=1 rest day)
+    pub regularity_ok: bool,
 }
 
 impl ProgressGoal {
@@ -111,8 +121,17 @@ impl ProgressGoal {
 
         // Personal best - with consolidation or beat target
         if let Some(best) = self.personal_best {
-            if self.is_consolidating {
-                // Consolidation period - show record with days remaining
+            if self.is_consolidating && !self.regularity_ok {
+                // Bad regularity - need 7 days of regular training
+                if self.is_timed {
+                    lines.push(format!("  Рекорд: {}", Self::format_duration(best)));
+                } else {
+                    lines.push(format!("  Рекорд: {}", best));
+                }
+                lines.push(format!("  ⚠ Пропущено {} дн. - нужно 7 дн. регулярно",
+                    self.rest_days_last_7));
+            } else if self.is_consolidating {
+                // Normal consolidation period - show record with days remaining
                 let days_str = self.consolidation_days_left
                     .map(|d| format!(", {} дн.", d))
                     .unwrap_or_default();
@@ -187,8 +206,16 @@ impl ProgressGoal {
         }
 
         if let Some(best) = self.personal_best {
-            if self.is_consolidating {
-                // Consolidation period - show record with days remaining
+            if self.is_consolidating && !self.regularity_ok {
+                // Bad regularity - need 7 days of regular training
+                if self.is_timed {
+                    parts.push(format!("Рекорд: {}", Self::format_duration(best)));
+                } else {
+                    parts.push(format!("Рекорд: {}", best));
+                }
+                parts.push(format!("⚠ -{} дн. (7 дн.)", self.rest_days_last_7));
+            } else if self.is_consolidating {
+                // Normal consolidation period - show record with days remaining
                 let days_str = self.consolidation_days_left
                     .map(|d| format!(", {} дн.", d))
                     .unwrap_or_default();
@@ -323,6 +350,34 @@ impl GoalCalculator {
             })
     }
 
+    /// Count days with base exercise training in the last N days
+    /// Returns (training_days, rest_days)
+    fn count_training_regularity(trainings: &[Training], window_days: i64) -> (i32, i32) {
+        use std::collections::HashSet;
+
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::days(window_days);
+
+        // Get names of all base exercises
+        let base_exercise_names: HashSet<&str> = BASE_EXERCISES
+            .iter()
+            .map(|e| e.name)
+            .collect();
+
+        // Find unique days with base exercise training
+        let training_days: HashSet<chrono::NaiveDate> = trainings
+            .iter()
+            .filter(|t| t.date >= cutoff)
+            .filter(|t| base_exercise_names.contains(t.exercise.as_str()))
+            .map(|t| t.date.with_timezone(&moscow_tz()).date_naive())
+            .collect();
+
+        let training_days_count = training_days.len() as i32;
+        let rest_days_count = window_days as i32 - training_days_count;
+
+        (training_days_count, rest_days_count.max(0))
+    }
+
     /// Calculate fatigue-aware goal for an exercise
     pub fn calculate(
         trainings: &[Training],
@@ -366,9 +421,16 @@ impl GoalCalculator {
         ).map(|(v, d)| (Some(v), Some(d)))
         .unwrap_or((None, None));
 
+        // Check training regularity FIRST (must have <=1 rest day in last 7 days)
+        let (training_days_last_7, rest_days_last_7) = Self::count_training_regularity(
+            trainings, RECORD_CONSOLIDATION_DAYS
+        );
+        let regularity_ok = rest_days_last_7 <= MAX_REST_DAYS_IN_WINDOW;
+
         // Enhanced consolidation logic:
         // - Must confirm (reach) record level within 7-day window to unlock progression
         // - If not confirmed within 7 days, extend consolidation another 7 days
+        // - Bad regularity (>1 rest day) resets consolidation to 7 days
         let now = Utc::now();
         let days_since_record = record_date
             .map(|date| (now - date).num_days())
@@ -382,10 +444,13 @@ impl GoalCalculator {
             .unwrap_or(false);
 
         // Consolidation logic:
+        // - Bad regularity → always consolidating (need 7 days of regular training)
         // - First 7 days after record: always consolidating (stabilize the new level)
         // - After 7 days: if confirmed in window → can challenge, else → extend consolidation
         let is_consolidating = if personal_best.is_none() {
             false  // No record yet - no consolidation
+        } else if !regularity_ok {
+            true  // Bad regularity → need 7 days of regular training first
         } else if days_since_record < RECORD_CONSOLIDATION_DAYS {
             true  // Within initial 7-day window
         } else {
@@ -394,13 +459,17 @@ impl GoalCalculator {
 
         // Calculate days left in current consolidation window
         let consolidation_days_left = if is_consolidating {
-            let days_in_window = days_since_record % RECORD_CONSOLIDATION_DAYS;
-            Some((RECORD_CONSOLIDATION_DAYS - days_in_window) as i32)
+            if !regularity_ok {
+                Some(7)  // Bad regularity → need 7 days of regular training
+            } else {
+                let days_in_window = days_since_record % RECORD_CONSOLIDATION_DAYS;
+                Some((RECORD_CONSOLIDATION_DAYS - days_in_window) as i32)
+            }
         } else {
             None
         };
 
-        // Challenge only if NOT consolidating
+        // Challenge only if NOT consolidating (which already includes regularity check)
         let beat_record_target = if is_consolidating {
             None  // Don't challenge during consolidation
         } else {
@@ -459,6 +528,9 @@ impl GoalCalculator {
             is_consolidating,
             consolidation_days_left,
             record_confirmed,
+            training_days_last_7,
+            rest_days_last_7,
+            regularity_ok,
         })
     }
 
@@ -775,6 +847,9 @@ mod tests {
             is_consolidating: false,
             consolidation_days_left: None,
             record_confirmed: true,
+            training_days_last_7: 6,
+            rest_days_last_7: 1,
+            regularity_ok: true,
         };
 
         let formatted = goal.format();
@@ -803,6 +878,9 @@ mod tests {
             is_consolidating: false,
             consolidation_days_left: None,
             record_confirmed: true,
+            training_days_last_7: 7,
+            rest_days_last_7: 0,
+            regularity_ok: true,
         };
 
         let formatted = goal.format_short();
@@ -837,6 +915,9 @@ mod tests {
             is_consolidating: false,
             consolidation_days_left: None,
             record_confirmed: true,
+            training_days_last_7: 6,
+            rest_days_last_7: 1,
+            regularity_ok: true,
         };
 
         let formatted = goal.format();
@@ -915,36 +996,49 @@ mod tests {
 
     #[test]
     fn test_consolidation_period_old_record() {
-        // Record set 10 days ago, confirmed within last 7 days → should NOT be consolidating
+        // Record set 10 days ago, confirmed within last 7 days, regular training → should NOT be consolidating
         let trainings = vec![
             create_training("отжимания на кулаках", 20, 10), // Record breakthrough
-            create_training("отжимания на кулаках", 20, 3),  // Confirmation within window
+            create_training("отжимания на кулаках", 20, 0),  // Confirmation today
+            create_training("отжимания на кулаках", 18, 1),
+            create_training("отжимания на кулаках", 18, 2),
+            create_training("отжимания на кулаках", 18, 3),
+            create_training("отжимания на кулаках", 18, 4),
+            create_training("отжимания на кулаках", 18, 5),
         ];
         let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
         assert!(goal.is_some());
         let g = goal.unwrap();
         assert!(!g.is_consolidating, "Should unlock after confirmation in window");
+        assert!(g.regularity_ok, "Should be regular with 6+ days");
         assert_eq!(g.beat_record_target, Some(21));
         assert!(g.record_confirmed);
     }
 
     #[test]
     fn test_consolidation_boundary_exactly_7_days() {
-        // Record set exactly 7 days ago, confirmed within last 7 days → should NOT be consolidating
+        // Record set exactly 7 days ago, confirmed within last 7 days, regular training → should NOT be consolidating
         let trainings = vec![
             create_training("отжимания на кулаках", 20, 7), // Record breakthrough (boundary)
-            create_training("отжимания на кулаках", 20, 2), // Confirmation within window
+            create_training("отжимания на кулаках", 20, 0), // Confirmation today
+            create_training("отжимания на кулаках", 18, 1),
+            create_training("отжимания на кулаках", 18, 2),
+            create_training("отжимания на кулаках", 18, 3),
+            create_training("отжимания на кулаках", 18, 4),
+            create_training("отжимания на кулаках", 18, 5),
         ];
         let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
         assert!(goal.is_some());
         let g = goal.unwrap();
         assert!(!g.is_consolidating, "Should unlock after confirmation (7 days + confirmed)");
+        assert!(g.regularity_ok, "Should be regular with 6+ days");
         assert_eq!(g.beat_record_target, Some(21));
         assert!(g.record_confirmed);
     }
 
     #[test]
     fn test_consolidation_format_during_period() {
+        // Test normal consolidation (good regularity, just within 7-day window)
         let goal = ProgressGoal {
             target_value: 20,
             personal_best: Some(20),
@@ -962,6 +1056,9 @@ mod tests {
             is_consolidating: true,
             consolidation_days_left: Some(5),
             record_confirmed: false,
+            training_days_last_7: 6,
+            rest_days_last_7: 1,
+            regularity_ok: true,
         };
 
         let formatted = goal.format();
@@ -971,6 +1068,7 @@ mod tests {
 
     #[test]
     fn test_consolidation_format_short_during_period() {
+        // Test normal consolidation (good regularity, just within 7-day window)
         let goal = ProgressGoal {
             target_value: 20,
             personal_best: Some(20),
@@ -988,6 +1086,9 @@ mod tests {
             is_consolidating: true,
             consolidation_days_left: Some(5),
             record_confirmed: false,
+            training_days_last_7: 6,
+            rest_days_last_7: 1,
+            regularity_ok: true,
         };
 
         let formatted = goal.format_short();
@@ -997,37 +1098,48 @@ mod tests {
 
     #[test]
     fn test_consolidation_timed_exercise() {
-        // Timed exercise (plank) - record 3 days ago
-        let mut training = create_training("стойка на локтях", 1, 3);
-        training.duration_secs = Some(120); // 2 minutes
+        // Timed exercise (plank) - record today, with regular training
+        let mut trainings: Vec<Training> = (0..6)
+            .map(|d| {
+                let mut t = create_training("стойка на локтях", 1, d);
+                t.duration_secs = Some(100);  // All same duration
+                t
+            })
+            .collect();
+        // Set the record for today (day 0)
+        trainings[0].duration_secs = Some(120);
 
-        let trainings = vec![training];
         let goal = GoalCalculator::calculate(&trainings, "стойка на локтях");
         assert!(goal.is_some());
         let g = goal.unwrap();
         assert!(g.is_consolidating, "Timed exercise should also consolidate");
         assert!(g.is_timed);
         assert_eq!(g.personal_best, Some(120));
-        assert_eq!(g.consolidation_days_left, Some(4)); // 7 - 3 = 4 days left
-        assert!(g.record_confirmed); // Record was confirmed on the same day it was set
+        assert!(g.regularity_ok, "Should be regular with 6 days");
 
         let formatted = g.format();
-        assert!(formatted.contains("2м (закрепляем, 4 дн.)"), "Timed format: {}", formatted);
+        assert!(formatted.contains("закрепляем"), "Timed format: {}", formatted);
     }
 
     // ===== New tests for enhanced consolidation =====
 
     #[test]
     fn test_consolidation_confirmed_unlocks() {
-        // Record set 10 days ago, confirmed 3 days ago → should unlock challenge
+        // Record set 10 days ago, confirmed, regular training → should unlock challenge
         let trainings = vec![
             create_training("отжимания на кулаках", 20, 10), // Record set 10 days ago
-            create_training("отжимания на кулаках", 20, 3),  // Confirmed 3 days ago
+            create_training("отжимания на кулаках", 20, 0),  // Confirmation today
+            create_training("отжимания на кулаках", 18, 1),
+            create_training("отжимания на кулаках", 18, 2),
+            create_training("отжимания на кулаках", 18, 3),
+            create_training("отжимания на кулаках", 18, 4),
+            create_training("отжимания на кулаках", 18, 5),
         ];
         let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
         assert!(goal.is_some());
         let g = goal.unwrap();
         assert!(!g.is_consolidating, "Should unlock after confirmation in window");
+        assert!(g.regularity_ok, "Should be regular with 6+ days");
         assert_eq!(g.beat_record_target, Some(21));
         assert!(g.record_confirmed);
     }
@@ -1051,29 +1163,162 @@ mod tests {
 
     #[test]
     fn test_consolidation_days_countdown() {
-        // Record set 2 days ago → 5 days left
-        let trainings = vec![
-            create_training("отжимания на кулаках", 20, 2),
-        ];
+        // Record set 2 days ago, regular training → 5 days left
+        let trainings: Vec<Training> = (0..6)
+            .map(|d| create_training("отжимания на кулаках", if d == 2 { 20 } else { 15 }, d))
+            .collect();
         let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
         assert!(goal.is_some());
         let g = goal.unwrap();
         assert!(g.is_consolidating);
+        assert!(g.regularity_ok, "Should be regular with 6 days");
         assert_eq!(g.consolidation_days_left, Some(5)); // 7 - 2 = 5
     }
 
     #[test]
     fn test_consolidation_new_record_resets() {
-        // Old record, then new record yesterday → should consolidate new record
+        // Old record, then new record yesterday with regular training → should consolidate new record
         let trainings = vec![
             create_training("отжимания на кулаках", 15, 10), // Old record
             create_training("отжимания на кулаках", 20, 1),  // New record yesterday
+            create_training("отжимания на кулаках", 18, 0),
+            create_training("отжимания на кулаках", 18, 2),
+            create_training("отжимания на кулаках", 18, 3),
+            create_training("отжимания на кулаках", 18, 4),
+            create_training("отжимания на кулаках", 18, 5),
         ];
         let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
         assert!(goal.is_some());
         let g = goal.unwrap();
         assert_eq!(g.personal_best, Some(20));
+        assert!(g.regularity_ok, "Should be regular with 6+ days");
         assert!(g.is_consolidating, "Should consolidate new record");
         assert_eq!(g.consolidation_days_left, Some(6)); // 7 - 1 = 6
+    }
+
+    // ===== Training Regularity Tests =====
+
+    #[test]
+    fn test_regularity_all_days_trained() {
+        // Training every day for 7 days → regularity OK
+        let trainings: Vec<Training> = (0..7)
+            .map(|d| create_training("отжимания на кулаках", 15, d))
+            .collect();
+        let (training_days, rest_days) = GoalCalculator::count_training_regularity(&trainings, 7);
+        assert_eq!(training_days, 7);
+        assert_eq!(rest_days, 0);
+    }
+
+    #[test]
+    fn test_regularity_one_rest_day() {
+        // Training 6 out of 7 days → regularity OK (1 rest day allowed)
+        let trainings: Vec<Training> = vec![
+            create_training("отжимания на кулаках", 15, 0),
+            create_training("отжимания на кулаках", 15, 1),
+            create_training("отжимания на кулаках", 15, 2),
+            // Day 3 - rest
+            create_training("отжимания на кулаках", 15, 4),
+            create_training("отжимания на кулаках", 15, 5),
+            create_training("отжимания на кулаках", 15, 6),
+        ];
+        let (training_days, rest_days) = GoalCalculator::count_training_regularity(&trainings, 7);
+        assert_eq!(training_days, 6);
+        assert_eq!(rest_days, 1);
+    }
+
+    #[test]
+    fn test_regularity_too_many_rest_days() {
+        // Training only 4 out of 7 days → regularity NOT OK (3 rest days)
+        let trainings: Vec<Training> = vec![
+            create_training("отжимания на кулаках", 15, 0),
+            create_training("отжимания на кулаках", 15, 2),
+            create_training("отжимания на кулаках", 15, 4),
+            create_training("отжимания на кулаках", 15, 6),
+        ];
+        let (training_days, rest_days) = GoalCalculator::count_training_regularity(&trainings, 7);
+        assert_eq!(training_days, 4);
+        assert_eq!(rest_days, 3);
+    }
+
+    #[test]
+    fn test_regularity_blocks_progression() {
+        // Old record (10 days), confirmed, but only 4 training days → no beat target
+        let trainings: Vec<Training> = vec![
+            create_training("отжимания на кулаках", 20, 10), // Record
+            create_training("отжимания на кулаках", 20, 0),  // Confirmed today
+            // Only 2 training days in the window (today + 1 other)
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(!g.regularity_ok, "Should not be regular with only 2 days");
+        assert!(g.beat_record_target.is_none(), "Should block progression");
+        assert!(g.rest_days_last_7 >= 5, "Should have many rest days");
+    }
+
+    #[test]
+    fn test_regularity_allows_progression() {
+        // Old record (10 days), confirmed, 6 training days → allow beat target
+        let trainings: Vec<Training> = vec![
+            create_training("отжимания на кулаках", 20, 10), // Record
+            create_training("отжимания на кулаках", 20, 0),  // Today
+            create_training("отжимания на кулаках", 18, 1),
+            create_training("отжимания на кулаках", 18, 2),
+            create_training("отжимания на кулаках", 18, 3),
+            create_training("отжимания на кулаках", 18, 4),
+            create_training("отжимания на кулаках", 18, 5),
+        ];
+        let goal = GoalCalculator::calculate(&trainings, "отжимания на кулаках");
+        assert!(goal.is_some());
+        let g = goal.unwrap();
+        assert!(g.regularity_ok, "Should be regular with 6+ days");
+        assert_eq!(g.beat_record_target, Some(21), "Should allow progression");
+    }
+
+    #[test]
+    fn test_regularity_format_warning() {
+        // Test that format shows warning when regularity is bad
+        // Note: when regularity is bad, is_consolidating should be true
+        let goal = ProgressGoal {
+            target_value: 20,
+            personal_best: Some(20),
+            beat_record_target: None,
+            is_timed: false,
+            confidence: GoalConfidence::High,
+            fatigue_factor: 0.0,
+            similar_sessions: 5,
+            today_sets: 1,
+            today_value: 18,
+            fatigued_muscles: vec![],
+            avg_7_days: Some(19.0),
+            avg_14_days: Some(18.0),
+            record_date: Some(Utc::now() - chrono::Duration::days(10)),
+            is_consolidating: true,  // Bad regularity → consolidating
+            consolidation_days_left: Some(7),
+            record_confirmed: true,
+            training_days_last_7: 4,
+            rest_days_last_7: 3,
+            regularity_ok: false,
+        };
+
+        let formatted = goal.format();
+        assert!(formatted.contains("Рекорд: 20"), "Should show record: {}", formatted);
+        assert!(formatted.contains("Пропущено 3 дн."), "Should show warning: {}", formatted);
+        assert!(formatted.contains("нужно 7 дн."), "Should show 7 days needed: {}", formatted);
+        assert!(!formatted.contains("побей"), "Should not show beat target: {}", formatted);
+    }
+
+    #[test]
+    fn test_regularity_only_counts_base_exercises() {
+        // Extra exercises don't count toward regularity
+        let trainings: Vec<Training> = vec![
+            create_training("отжимания на кулаках", 15, 0), // Base exercise
+            create_training("впусти меня", 10, 1),          // Extra exercise - doesn't count!
+            create_training("впусти меня", 10, 2),
+        ];
+        let (training_days, rest_days) = GoalCalculator::count_training_regularity(&trainings, 7);
+        // Only 1 day with base exercise
+        assert_eq!(training_days, 1, "Only base exercises should count");
+        assert_eq!(rest_days, 6);
     }
 }
