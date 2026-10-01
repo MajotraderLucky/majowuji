@@ -1143,6 +1143,7 @@ dependencies = [
  "ndarray",
  "rand",
  "ratatui",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

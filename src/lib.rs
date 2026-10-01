@@ -5,6 +5,7 @@
 pub mod bot;
 pub mod db;
 pub mod exercises;
+pub mod intervals;
 pub mod ml;
 pub mod tips;
 pub mod tui;

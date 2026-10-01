@@ -2,20 +2,32 @@
 //!
 //! 无极 (wuji) - "limitless", the state of infinite potential
 
-use anyhow::Result;
+use std::path::Path;
+
+use anyhow::{Result, bail};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
+use serde_json::json;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::prelude::*;
 
 use majowuji::db::{Database, Training};
+use majowuji::intervals;
 use majowuji::ml::Analytics;
 use majowuji::tui::App;
-
-const DB_PATH: &str = "majowuji.db";
 
 #[derive(Parser)]
 #[command(name = "majowuji")]
 #[command(author, version, about = "无极 - Personal martial arts training tracker")]
 struct Cli {
+    /// Path to SQLite database
+    #[arg(long, global = true, env = "MAJOWUJI_DB", default_value = "majowuji.db")]
+    db: String,
+
+    /// Machine-readable JSON output on stdout (list, stats, log)
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -31,11 +43,11 @@ enum Commands {
         exercise: String,
 
         /// Number of sets
-        #[arg(short, long, default_value = "1")]
+        #[arg(short, long, default_value = "1", value_parser = clap::value_parser!(i32).range(1..))]
         sets: i32,
 
         /// Number of reps per set
-        #[arg(short, long, default_value = "10")]
+        #[arg(short, long, default_value = "10", value_parser = clap::value_parser!(i32).range(1..))]
         reps: i32,
 
         /// Optional notes
@@ -56,6 +68,15 @@ enum Commands {
         exercise: Option<String>,
     },
 
+    /// Create or migrate the database schema (no training records are added)
+    Migrate,
+
+    /// Watch data from Intervals.icu (API key in INTERVALS_API_KEY)
+    Intervals {
+        #[command(subcommand)]
+        action: IntervalsAction,
+    },
+
     /// Start Telegram bot
     Bot {
         /// Telegram bot token (or set TELOXIDE_TOKEN env var)
@@ -64,23 +85,83 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum IntervalsAction {
+    /// Import watch workouts and fill heart rate of logged sets
+    Sync {
+        /// Days back from today to import
+        #[arg(long, default_value = "7", value_parser = clap::value_parser!(i64).range(1..=365))]
+        days: i64,
+
+        /// Intervals.icu athlete id (e.g. i123456)
+        #[arg(long, env = "MAJOWUJI_INTERVALS_ATHLETE")]
+        athlete: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load .env file if present
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt::init();
+    // stdout is the product (JSON for agents), diagnostics go to stderr.
+    // RUST_LOG is parsed as Targets (as fmt::init() does without the env-filter feature);
+    // unset or unparsable RUST_LOG falls back to INFO.
+    let targets = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|v| v.parse::<Targets>().ok())
+        .unwrap_or_else(|| Targets::new().with_default(tracing::Level::INFO));
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(targets)
+        .init();
 
     let cli = Cli::parse();
-    let db = Database::open(DB_PATH)?;
+
+    // Only a real file path: in-memory databases would make `log` a false success
+    if cli.db.is_empty() || cli.db == ":memory:" || cli.db.starts_with("file:") {
+        bail!("--db must be a file path, got {:?}", cli.db);
+    }
+    let is_tui = matches!(cli.command, Some(Commands::Tui) | None);
+    if cli.json && (is_tui || matches!(cli.command, Some(Commands::Bot { .. }) | Some(Commands::Migrate))) {
+        bail!("--json is supported only for list, stats, log and intervals sync");
+    }
+
+    // migrate updates an existing database only: a typo in the path must not yield a new empty one
+    if matches!(cli.command, Some(Commands::Migrate))
+        && std::fs::metadata(&cli.db).map(|m| m.len() == 0).unwrap_or(true)
+    {
+        bail!("database not found or empty: {}", cli.db);
+    }
+
+    // Read commands must neither create nor migrate the database
+    let writes_db = matches!(
+        cli.command,
+        Some(Commands::Log { .. })
+            | Some(Commands::Bot { .. })
+            | Some(Commands::Migrate)
+            | Some(Commands::Intervals { .. })
+    );
+    let db = if writes_db {
+        Database::open(&cli.db)?
+    } else {
+        if !Path::new(&cli.db).exists() {
+            bail!("database not found: {}", cli.db);
+        }
+        Database::open_readonly(&cli.db)?
+    };
 
     match cli.command {
-        Some(Commands::Tui) => {
+        Some(Commands::Tui) | None => {
             let mut app = App::new(db)?;
             app.run()?;
         }
 
         Some(Commands::Log { exercise, sets, reps, notes }) => {
+            let exercise = exercise.trim().to_string();
+            if exercise.is_empty() {
+                bail!("exercise name must not be empty");
+            }
             let training = Training {
                 id: None,
                 date: Utc::now(),
@@ -94,11 +175,21 @@ async fn main() -> Result<()> {
                 user_id: None,
             };
             let id = db.add_training_cli(&training)?;
-            println!("Logged: {} - {}x{} (id: {})", exercise, sets, reps, id);
+            if cli.json {
+                let logged = Training { id: Some(id), ..training };
+                println!("{}", serde_json::to_string_pretty(&logged)?);
+            } else {
+                println!("Logged: {} - {}x{} (id: {})", exercise, sets, reps, id);
+            }
         }
 
         Some(Commands::List { limit }) => {
             let trainings = db.get_trainings()?;
+            if cli.json {
+                let recent: Vec<_> = trainings.iter().take(limit).collect();
+                println!("{}", serde_json::to_string_pretty(&recent)?);
+                return Ok(());
+            }
             println!("Recent trainings:");
             println!("{:-<60}", "");
             for t in trainings.iter().take(limit) {
@@ -115,7 +206,26 @@ async fn main() -> Result<()> {
 
         Some(Commands::Stats { exercise }) => {
             let trainings = db.get_trainings()?;
+            let total = trainings.len();
             let analytics = Analytics::new(trainings);
+
+            if cli.json {
+                let stats = match &exercise {
+                    Some(ex) => json!({
+                        "exercise": ex,
+                        "total_volume": analytics.total_volume(ex),
+                        "suggested_next": analytics
+                            .predict_next_load(ex)
+                            .map(|(sets, reps)| json!({ "sets": sets, "reps": reps })),
+                    }),
+                    None => json!({
+                        "total_trainings": total,
+                        "weekly_frequency": analytics.weekly_frequency(),
+                    }),
+                };
+                println!("{}", serde_json::to_string_pretty(&stats)?);
+                return Ok(());
+            }
 
             println!("Training Statistics");
             println!("{:-<40}", "");
@@ -134,16 +244,53 @@ async fn main() -> Result<()> {
             }
         }
 
-        Some(Commands::Bot { token }) => {
-            println!("Starting Telegram bot...");
-            println!("База данных: {}", DB_PATH);
-            majowuji::bot::run_bot(token, DB_PATH).await?;
+        Some(Commands::Intervals { action: IntervalsAction::Sync { days, athlete } }) => {
+            // The key comes from the environment only: never from argv (visible in ps and logs)
+            let api_key = std::env::var("INTERVALS_API_KEY").unwrap_or_default();
+            let client = intervals::Client::new(api_key, athlete)?;
+            // Intervals.icu filters by the athlete's local date, which may be a day ahead
+            // or behind UTC: widen the window by one day on both sides
+            let today = Utc::now().date_naive();
+            let one_day = chrono::Duration::days(1);
+            let sessions = client
+                .sessions(today - chrono::Duration::days(days) - one_day, today + one_day)
+                .await?;
+            for s in &sessions {
+                db.upsert_watch_session(s)?;
+            }
+            let links = intervals::link_pulses(&db.get_trainings()?, &sessions);
+            let mut filled = Vec::new();
+            for l in links {
+                if db.fill_training_pulse(l.training_id, l.pulse_before, l.pulse_after)? {
+                    filled.push(l);
+                }
+            }
+            if cli.json {
+                let report = json!({ "sessions": sessions.len(), "filled": filled });
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("Watch sessions imported: {}", sessions.len());
+                for l in &filled {
+                    println!(
+                        "training {} <- {}: pulse {} -> {}",
+                        l.training_id, l.session_id, l.pulse_before, l.pulse_after
+                    );
+                }
+            }
         }
 
-        None => {
-            // Default: show TUI
-            let mut app = App::new(db)?;
-            app.run()?;
+        Some(Commands::Migrate) => {
+            // Database::open has already run the migrations; they ignore ALTER errors, so verify
+            if !db.schema_is_current() {
+                bail!("migration did not complete (read-only file?): {}", cli.db);
+            }
+            println!("Database schema is up to date: {}", cli.db);
+        }
+
+        Some(Commands::Bot { token }) => {
+            println!("Starting Telegram bot...");
+            println!("База данных: {}", cli.db);
+            majowuji::bot::run_bot(token, &cli.db).await?;
         }
     }
 

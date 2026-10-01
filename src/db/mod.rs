@@ -1,8 +1,8 @@
 //! Database module - SQLite storage for training data
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 
 /// User record
@@ -59,6 +59,34 @@ impl Database {
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
+    }
+
+    /// Open an existing database read-only: no file creation, no schema init or migration
+    pub fn open_readonly(path: &str) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let has_trainings: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trainings')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_trainings {
+            bail!("not a majowuji database (no trainings table): {}", path);
+        }
+        let db = Self { conn };
+        if !db.schema_is_current() {
+            bail!("database schema is outdated, run `majowuji migrate` first: {}", path);
+        }
+        Ok(db)
+    }
+
+    /// True when the trainings table has every column the current code reads
+    pub fn schema_is_current(&self) -> bool {
+        self.conn
+            .prepare("SELECT duration_secs, pulse_before, pulse_after, user_id FROM trainings LIMIT 0")
+            .is_ok()
     }
 
     /// Initialize database schema
@@ -119,6 +147,23 @@ impl Database {
             );
         }
 
+        // Watch workouts imported from Intervals.icu (hr_json: [[offset_secs, bpm], ...])
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS watch_sessions (
+                id TEXT PRIMARY KEY,
+                start TEXT NOT NULL,
+                activity_type TEXT,
+                name TEXT,
+                elapsed_secs INTEGER NOT NULL,
+                avg_hr INTEGER,
+                max_hr INTEGER,
+                calories INTEGER,
+                source TEXT,
+                hr_json TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         // Migration: add user_id column if missing
         let has_user_id: bool = self.conn
             .prepare("SELECT user_id FROM trainings LIMIT 1")
@@ -131,6 +176,44 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    // ==================== WATCH SESSION METHODS ====================
+
+    /// Insert or refresh a watch workout (idempotent by Intervals.icu id)
+    pub fn upsert_watch_session(&self, s: &crate::intervals::WatchSession) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO watch_sessions (id, start, activity_type, name, elapsed_secs, avg_hr, max_hr, calories, source, hr_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(id) DO UPDATE SET start = ?2, activity_type = ?3, name = ?4, elapsed_secs = ?5,
+                 avg_hr = ?6, max_hr = ?7, calories = ?8, source = ?9, hr_json = ?10",
+            params![
+                s.id,
+                s.start.to_rfc3339(),
+                s.activity_type,
+                s.name,
+                s.elapsed_secs,
+                s.avg_hr,
+                s.max_hr,
+                s.calories,
+                s.source,
+                serde_json::to_string(&s.hr)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Fill missing heart rate of a logged set, field by field; never overwrites real
+    /// readings (NULL and 0 both mean no reading)
+    pub fn fill_training_pulse(&self, training_id: i64, before: i32, after: i32) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE trainings SET
+                 pulse_before = CASE WHEN COALESCE(pulse_before, 0) <= 0 THEN ?1 ELSE pulse_before END,
+                 pulse_after = CASE WHEN COALESCE(pulse_after, 0) <= 0 THEN ?2 ELSE pulse_after END
+             WHERE id = ?3 AND (COALESCE(pulse_before, 0) <= 0 OR COALESCE(pulse_after, 0) <= 0)",
+            params![before, after, training_id],
+        )?;
+        Ok(changed > 0)
     }
 
     // ==================== USER METHODS ====================
@@ -600,5 +683,28 @@ mod tests {
         assert_eq!(trainings[0].pulse_after, Some(130));
         assert_eq!(trainings[0].duration_secs, Some(45));
         assert_eq!(trainings[0].notes, Some("test note".to_string()));
+    }
+
+    #[test]
+    fn test_fill_training_pulse_per_field_keeps_real_readings() {
+        let db = create_test_db();
+        let t = Training {
+            id: None,
+            date: Utc::now(),
+            exercise: "пресс".into(),
+            sets: 1,
+            reps: 10,
+            duration_secs: None,
+            pulse_before: Some(0),
+            pulse_after: Some(100),
+            notes: None,
+            user_id: None,
+        };
+        let id = db.add_training_cli(&t).unwrap();
+        assert!(db.fill_training_pulse(id, 98, 111).unwrap());
+        let got = db.get_trainings().unwrap().into_iter().find(|t| t.id == Some(id)).unwrap();
+        assert_eq!((got.pulse_before, got.pulse_after), (Some(98), Some(100)));
+        // both real now: nothing to fill
+        assert!(!db.fill_training_pulse(id, 50, 50).unwrap());
     }
 }
