@@ -50,9 +50,25 @@ enum Commands {
         #[arg(short, long, default_value = "10", value_parser = clap::value_parser!(i32).range(1..))]
         reps: i32,
 
+        /// Duration in seconds, for timed exercises (plank, stance, ...)
+        #[arg(long, value_parser = clap::value_parser!(i32).range(1..))]
+        duration: Option<i32>,
+
+        /// Heart rate before the set, bpm
+        #[arg(long, value_parser = clap::value_parser!(i32).range(30..=220))]
+        pulse_before: Option<i32>,
+
+        /// Heart rate after the set, bpm
+        #[arg(long, value_parser = clap::value_parser!(i32).range(30..=220))]
+        pulse_after: Option<i32>,
+
         /// Optional notes
         #[arg(short, long)]
         notes: Option<String>,
+
+        /// Create and initialize the database if the file does not exist
+        #[arg(long)]
+        create: bool,
     },
 
     /// List training history
@@ -96,6 +112,10 @@ enum IntervalsAction {
         /// Intervals.icu athlete id (e.g. i123456)
         #[arg(long, env = "MAJOWUJI_INTERVALS_ATHLETE")]
         athlete: String,
+
+        /// Create and initialize the database if the file does not exist
+        #[arg(long)]
+        create: bool,
     },
 }
 
@@ -143,6 +163,19 @@ async fn main() -> Result<()> {
             | Some(Commands::Intervals { .. })
     );
     let db = if writes_db {
+        // No silent creation from a wrong cwd: an agent shell without MAJOWUJI_DB
+        // must fail loudly, not seed an empty database somewhere else
+        let may_create = match &cli.command {
+            Some(Commands::Log { create, .. }) => *create,
+            Some(Commands::Intervals { action: IntervalsAction::Sync { create, .. } }) => *create,
+            _ => false,
+        };
+        if !may_create && !Path::new(&cli.db).exists() {
+            bail!(
+                "database not found: {} (pass --db / set MAJOWUJI_DB, or add --create to initialize)",
+                cli.db
+            );
+        }
         Database::open(&cli.db)?
     } else {
         if !Path::new(&cli.db).exists() {
@@ -157,7 +190,7 @@ async fn main() -> Result<()> {
             app.run()?;
         }
 
-        Some(Commands::Log { exercise, sets, reps, notes }) => {
+        Some(Commands::Log { exercise, sets, reps, duration, pulse_before, pulse_after, notes, .. }) => {
             let exercise = exercise.trim().to_string();
             if exercise.is_empty() {
                 bail!("exercise name must not be empty");
@@ -168,9 +201,9 @@ async fn main() -> Result<()> {
                 exercise: exercise.clone(),
                 sets,
                 reps,
-                duration_secs: None,
-                pulse_before: None,
-                pulse_after: None,
+                duration_secs: duration,
+                pulse_before,
+                pulse_after,
                 notes,
                 user_id: None,
             };
@@ -244,7 +277,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        Some(Commands::Intervals { action: IntervalsAction::Sync { days, athlete } }) => {
+        Some(Commands::Intervals { action: IntervalsAction::Sync { days, athlete, .. } }) => {
             // The key comes from the environment only: never from argv (visible in ps and logs)
             let api_key = std::env::var("INTERVALS_API_KEY").unwrap_or_default();
             let client = intervals::Client::new(api_key, athlete)?;
@@ -261,8 +294,16 @@ async fn main() -> Result<()> {
             let links = intervals::link_pulses(&db.get_trainings()?, &sessions);
             let mut filled = Vec::new();
             for l in links {
-                if db.fill_training_pulse(l.training_id, l.pulse_before, l.pulse_after)? {
-                    filled.push(l);
+                // the report shows what is actually stored, kept real readings included
+                if let Some((before, after)) =
+                    db.fill_training_pulse(l.training_id, l.pulse_before, l.pulse_after)?
+                {
+                    filled.push(intervals::PulseLink {
+                        training_id: l.training_id,
+                        session_id: l.session_id.clone(),
+                        pulse_before: before,
+                        pulse_after: after,
+                    });
                 }
             }
             if cli.json {

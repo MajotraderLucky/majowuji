@@ -45,7 +45,7 @@ fn run(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn log(dir: &Path, db: &str, exercise: &str) -> serde_json::Value {
-    let out = run(dir, &["--db", db, "log", exercise, "-s", "2", "-r", "5", "--json"]);
+    let out = run(dir, &["--db", db, "log", exercise, "-s", "2", "-r", "5", "--create", "--json"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).unwrap()
 }
@@ -120,7 +120,16 @@ fn in_memory_database_is_rejected() {
 #[test]
 fn log_rejects_invalid_input() {
     let dir = temp_dir();
-    for args in [&["-s", "0"][..], &["-r", "0"][..], &["-r", "-3"][..]] {
+    for args in [
+        &["-s", "0"][..],
+        &["-r", "0"][..],
+        &["-r", "-3"][..],
+        &["--duration", "0"][..],
+        &["--duration", "-5"][..],
+        &["--pulse-before", "0"][..],
+        &["--pulse-before", "29"][..],
+        &["--pulse-after", "300"][..],
+    ] {
         let mut full = vec!["--db", "t.db", "log", "jab"];
         full.extend_from_slice(args);
         let out = run(&dir, &full);
@@ -128,6 +137,46 @@ fn log_rejects_invalid_input() {
         assert!(out.stdout.is_empty());
     }
     assert_failed_clean(&run(&dir, &["--db", "t.db", "log", "   ", "--json"]));
+}
+
+#[test]
+fn log_writes_duration_and_pulse() {
+    let dir = temp_dir();
+    let out = run(&dir, &["--db", "t.db", "log", "plank", "-s", "1", "-r", "1", "--create",
+        "--duration", "67", "--pulse-before", "76", "--pulse-after", "94", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let logged: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(logged["duration_secs"], 67);
+    assert_eq!(logged["pulse_before"], 76);
+    assert_eq!(logged["pulse_after"], 94);
+
+    let out = run(&dir, &["--db", "t.db", "list", "--json"]);
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list[0]["duration_secs"], 67);
+    assert_eq!(list[0]["pulse_before"], 76);
+    assert_eq!(list[0]["pulse_after"], 94);
+}
+
+#[test]
+fn write_commands_do_not_create_missing_database() {
+    let dir = temp_dir();
+    assert_failed_clean(&run(&dir, &["--db", "missing.db", "log", "jab"]));
+    assert_failed_clean(&run(&dir, &["--db", "missing.db", "intervals", "sync", "--athlete", "i1"]));
+    assert!(!dir.join("missing.db").exists());
+}
+
+#[test]
+fn log_create_initializes_new_database() {
+    let dir = temp_dir();
+    let out = run(&dir, &["--db", "fresh.db", "log", "jab", "--create", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let logged: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(logged["id"], 1);
+
+    let out = run(&dir, &["--db", "fresh.db", "list", "--json"]);
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["exercise"], "jab");
 }
 
 #[test]
@@ -157,7 +206,7 @@ fn env_variable_selects_database() {
 #[test]
 fn log_json_returns_stored_record() {
     let dir = temp_dir();
-    let out = run(&dir, &["--db", "t.db", "log", "jab", "-s", "3", "-r", "7", "-n", "hip rotation", "--json"]);
+    let out = run(&dir, &["--db", "t.db", "log", "jab", "-s", "3", "-r", "7", "-n", "hip rotation", "--create", "--json"]);
     assert_eq!(out.status.code(), Some(0));
     let logged: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(logged["id"], 1);
@@ -251,4 +300,23 @@ fn migrate_requires_existing_database_and_rejects_json() {
     assert_failed_clean(&run(&dir, &["--db", "empty.db", "migrate"]));
     log(&dir, "t.db", "jab");
     assert_failed_clean(&run(&dir, &["--db", "t.db", "migrate", "--json"]));
+}
+
+#[test]
+fn missing_watch_sessions_requires_migrate() {
+    let dir = temp_dir();
+    log(&dir, "t.db", "jab");
+    {
+        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch("DROP TABLE watch_sessions;").unwrap();
+    }
+    let out = run(&dir, &["--db", "t.db", "list", "--json"]);
+    assert_failed_clean(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("majowuji migrate"));
+
+    let out = run(&dir, &["--db", "t.db", "migrate"]);
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    let out = run(&dir, &["--db", "t.db", "list", "--json"]);
+    assert_eq!(out.status.code(), Some(0));
 }

@@ -29,7 +29,8 @@ create, initialize or migrate it. A missing file, an empty file, a non-SQLite fi
 or a database without the `trainings` table is an error (exit 1), not an empty
 result. A database with an outdated schema is also an error: run `majowuji migrate`
 once (it updates the schema of an existing non-empty file and adds no records).
-Only `log` and `bot` create a new file. `--db` must be a file path: empty,
+No command creates the file silently: `log` and `intervals sync` create and
+initialize it only with an explicit `--create`. `--db` must be a file path: empty,
 `:memory:` and `file:` URIs are rejected.
 
 ## Channels and exit codes
@@ -48,7 +49,7 @@ Only `log` and `bot` create a new file. `--db` must be a file path: empty,
 | `list [-l N] --json`                         | read  | array of trainings, newest first (default N=10)  |
 | `stats --json`                               | read  | `{total_trainings, weekly_frequency}`            |
 | `stats <exercise> --json`                    | read  | `{exercise, total_volume, suggested_next}`       |
-| `log <exercise> -s S -r R [-n NOTE] --json`  | write | the stored training with its `id`                |
+| `log <exercise> -s S -r R [--duration D --pulse-before B --pulse-after A] [-n NOTE] [--create] --json` | write | the stored training with its `id` |
 
 Training object:
 
@@ -67,9 +68,12 @@ Training object:
 }
 ```
 
-`-s` and `-r` must be at least 1. `date` is RFC 3339 in UTC. `stats <exercise>`
-matches by case-insensitive substring. `suggested_next` is `{sets, reps}` or
-`null` when there is no history for the exercise.
+`-s` and `-r` must be at least 1. `--duration` is seconds (>= 1) for timed
+exercises; `--pulse-before`/`--pulse-after` are bpm in 30..=220. `--create`
+initializes a missing database file (schema only, no records). `date` is
+RFC 3339 in UTC. `stats <exercise>` matches by case-insensitive substring.
+`suggested_next` is `{sets, reps}` or `null` when there is no history for the
+exercise.
 
 ## Permissions
 

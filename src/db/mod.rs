@@ -82,10 +82,20 @@ impl Database {
         Ok(db)
     }
 
-    /// True when the trainings table has every column the current code reads
+    /// True when the schema has every table and column the current code reads
     pub fn schema_is_current(&self) -> bool {
         self.conn
             .prepare("SELECT duration_secs, pulse_before, pulse_after, user_id FROM trainings LIMIT 0")
+            .is_ok()
+            && self.has_watch_sessions()
+    }
+
+    fn has_watch_sessions(&self) -> bool {
+        self.conn
+            .prepare(
+                "SELECT id, start, activity_type, name, elapsed_secs, avg_hr, max_hr, calories, source, hr_json
+                 FROM watch_sessions LIMIT 0",
+            )
             .is_ok()
     }
 
@@ -204,16 +214,27 @@ impl Database {
     }
 
     /// Fill missing heart rate of a logged set, field by field; never overwrites real
-    /// readings (NULL and 0 both mean no reading)
-    pub fn fill_training_pulse(&self, training_id: i64, before: i32, after: i32) -> Result<bool> {
-        let changed = self.conn.execute(
+    /// readings (NULL and 0 both mean no reading). Returns the values actually stored
+    /// by this update — kept real readings included — or None when there was nothing to fill.
+    pub fn fill_training_pulse(
+        &self,
+        training_id: i64,
+        before: i32,
+        after: i32,
+    ) -> Result<Option<(i32, i32)>> {
+        match self.conn.query_row(
             "UPDATE trainings SET
                  pulse_before = CASE WHEN COALESCE(pulse_before, 0) <= 0 THEN ?1 ELSE pulse_before END,
                  pulse_after = CASE WHEN COALESCE(pulse_after, 0) <= 0 THEN ?2 ELSE pulse_after END
-             WHERE id = ?3 AND (COALESCE(pulse_before, 0) <= 0 OR COALESCE(pulse_after, 0) <= 0)",
+             WHERE id = ?3 AND (COALESCE(pulse_before, 0) <= 0 OR COALESCE(pulse_after, 0) <= 0)
+             RETURNING pulse_before, pulse_after",
             params![before, after, training_id],
-        )?;
-        Ok(changed > 0)
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(pair) => Ok(Some(pair)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     // ==================== USER METHODS ====================
@@ -701,10 +722,11 @@ mod tests {
             user_id: None,
         };
         let id = db.add_training_cli(&t).unwrap();
-        assert!(db.fill_training_pulse(id, 98, 111).unwrap());
+        // stored becomes (98, 100): the kept real reading is reported, not the computed 111
+        assert_eq!(db.fill_training_pulse(id, 98, 111).unwrap(), Some((98, 100)));
         let got = db.get_trainings().unwrap().into_iter().find(|t| t.id == Some(id)).unwrap();
         assert_eq!((got.pulse_before, got.pulse_after), (Some(98), Some(100)));
         // both real now: nothing to fill
-        assert!(!db.fill_training_pulse(id, 50, 50).unwrap());
+        assert_eq!(db.fill_training_pulse(id, 50, 50).unwrap(), None);
     }
 }

@@ -14,6 +14,10 @@ pub const API_BASE: &str = "https://intervals.icu/api/v1";
 /// A set logged up to this long after the watch workout stopped still belongs to it
 pub const GRACE_SECS: i64 = 300;
 
+/// The watch reports 0 until the sensor locks on, so the first reading arrives late;
+/// within this window it may still serve as "pulse before" an early logged set
+const WARMUP_GRACE_SECS: i64 = 60;
+
 /// Workout recorded by the watch
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WatchSession {
@@ -35,13 +39,14 @@ impl WatchSession {
         self.start + chrono::Duration::seconds(self.elapsed_secs)
     }
 
-    /// Last sample at or before `offset`, or the first sample
+    /// Last sample at or before `offset`; the first sample is used only inside the
+    /// warmup window, so a far-future reading is never reported as "pulse before"
     fn hr_at(&self, offset: i64) -> Option<i32> {
         self.hr
             .iter()
             .take_while(|(t, _)| *t <= offset)
             .last()
-            .or(self.hr.first())
+            .or_else(|| self.hr.first().filter(|(t, _)| *t - offset <= WARMUP_GRACE_SECS))
             .map(|(_, bpm)| *bpm)
     }
 
@@ -134,6 +139,7 @@ struct ApiStream {
 /// Intervals.icu REST client (API key auth)
 pub struct Client {
     http: reqwest::Client,
+    base: String,
     api_key: String,
     athlete: String,
 }
@@ -147,13 +153,21 @@ impl Client {
             bail!("Intervals.icu athlete id is empty");
         }
         let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-        Ok(Self { http, api_key, athlete })
+        Ok(Self { http, base: API_BASE.to_string(), api_key, athlete })
+    }
+
+    /// Test-only: the same client pointed at a mock server
+    #[cfg(test)]
+    fn with_base(base: String, api_key: String, athlete: String) -> Result<Self> {
+        let mut client = Self::new(api_key, athlete)?;
+        client.base = base;
+        Ok(client)
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let resp = self
             .http
-            .get(format!("{}{}", API_BASE, path))
+            .get(format!("{}{}", self.base, path))
             .basic_auth("API_KEY", Some(&self.api_key))
             .send()
             .await?;
@@ -179,20 +193,31 @@ impl Client {
             let streams: Vec<ApiStream> = self
                 .get(&format!("/activity/{}/streams?types=time,heartrate", a.id))
                 .await?;
+            let hr = zip_hr(&streams);
             sessions.push(WatchSession {
                 id: a.id,
                 start,
                 activity_type: a.activity_type,
                 name: a.name,
-                elapsed_secs: a.elapsed_time.unwrap_or(0),
+                elapsed_secs: effective_elapsed(a.elapsed_time, &hr),
                 avg_hr: a.average_heartrate.map(|v| v.round() as i32),
                 max_hr: a.max_heartrate.map(|v| v.round() as i32),
                 calories: a.calories.map(|v| v.round() as i32),
                 source: a.source,
-                hr: zip_hr(&streams),
+                hr,
             });
         }
         Ok(sessions)
+    }
+}
+
+/// The end of a workout is its reported elapsed time; a missing one falls back to
+/// the last heart-rate sample (0 when nothing is known — such sessions carry no
+/// heart rate and are skipped by the linker anyway)
+fn effective_elapsed(api_elapsed: Option<i64>, hr: &[(i64, i32)]) -> i64 {
+    match api_elapsed {
+        Some(secs) => secs,
+        None => hr.last().map(|(t, _)| *t).unwrap_or(0),
     }
 }
 
@@ -296,6 +321,141 @@ mod tests {
     fn session_without_heart_rate_links_nothing() {
         let s = session(t0(), &[]);
         assert!(link_pulses(&[set(1, t0() + secs(10))], &[s]).is_empty());
+    }
+
+    #[test]
+    fn warmup_first_sample_serves_as_before() {
+        // set 1 is logged at 10 s, before the sensor locks on (19 s): it links
+        // nothing, but moves the boundary, so set 2 gets its "before" from the
+        // warmup fallback — the first sample, 9 s into the future
+        let s = session(t0(), &[(19, 98), (32, 100), (50, 120)]);
+        let links = link_pulses(&[set(1, t0() + secs(10)), set(2, t0() + secs(50))], &[s]);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].training_id, 2);
+        assert_eq!(links[0].pulse_before, 98);
+        assert_eq!(links[0].pulse_after, 120);
+    }
+
+    #[test]
+    fn far_future_first_sample_is_not_used_as_before() {
+        // first reading is 120 s after the set: too far to pass as "pulse before"
+        let s = session(t0(), &[(180, 110), (200, 120)]);
+        assert!(link_pulses(&[set(1, t0() + secs(60))], &[s]).is_empty());
+    }
+
+    #[test]
+    fn effective_elapsed_falls_back_to_hr_stream() {
+        assert_eq!(effective_elapsed(None, &[(0, 70), (600, 90)]), 600);
+        // the API value is authoritative even when the stream runs longer
+        assert_eq!(effective_elapsed(Some(300), &[(0, 70), (600, 90)]), 300);
+        assert_eq!(effective_elapsed(Some(900), &[(0, 70)]), 900);
+        assert_eq!(effective_elapsed(None, &[]), 0);
+    }
+
+    fn http_json(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    /// One canned HTTP response per incoming connection, in order; returns the
+    /// received requests (method, path and headers) for contract assertions
+    fn spawn_mock(
+        responses: Vec<String>,
+    ) -> (String, std::thread::JoinHandle<()>, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        use std::sync::{Arc, Mutex};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen_requests = Arc::clone(&requests);
+        let handle = std::thread::spawn(move || {
+            for resp in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    seen.extend_from_slice(&buf[..n]);
+                    if n == 0 || seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                seen_requests
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&seen).into_owned());
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        (format!("http://{}", addr), handle, requests)
+    }
+
+    #[tokio::test]
+    async fn client_sync_end_to_end_with_mock_api_and_database() {
+        let activities = r#"[{
+            "id": "a1", "start_date": "2026-10-01T18:00:00Z", "type": "WeightTraining",
+            "elapsed_time": null, "average_heartrate": 98.4, "max_heartrate": 119.0,
+            "calories": 11.0, "source": "ZEPP" }]"#;
+        let streams = r#"[
+            {"type": "time", "data": [0, 19, 40, 70]},
+            {"type": "heartrate", "data": [0, 98, 100, 119]}]"#;
+        let (base, server, requests) = spawn_mock(vec![http_json(activities), http_json(streams)]);
+
+        let client = Client::with_base(base, "key".into(), "i1".into()).unwrap();
+        let oldest = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        let newest = chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let sessions = client.sessions(oldest, newest).await.unwrap();
+        server.join().unwrap();
+
+        // the API contract itself: exact endpoints, date parameters and auth
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "one request per endpoint");
+        assert!(requests[0].contains("GET /athlete/i1/activities?oldest=2026-09-30&newest=2026-10-02 "));
+        assert!(requests[0].to_lowercase().contains("authorization: basic"));
+        assert!(requests[1].contains("GET /activity/a1/streams?types=time,heartrate "));
+
+        assert_eq!(sessions.len(), 1);
+        let s = &sessions[0];
+        assert_eq!(s.id, "a1");
+        assert_eq!(s.start, Utc.with_ymd_and_hms(2026, 10, 1, 18, 0, 0).unwrap());
+        // elapsed_time missing in the API response: taken from the last HR sample
+        assert_eq!(s.elapsed_secs, 70);
+        assert_eq!(s.avg_hr, Some(98));
+        assert_eq!(s.max_hr, Some(119));
+        // the 0 bpm warmup sample is dropped
+        assert_eq!(s.hr, vec![(19, 98), (40, 100), (70, 119)]);
+
+        let dir = std::env::temp_dir().join(format!("majowuji-mock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::db::Database::open(dir.join("it.db").to_str().unwrap()).unwrap();
+        let training = Training {
+            id: None,
+            date: Utc.with_ymd_and_hms(2026, 10, 1, 18, 0, 40).unwrap(),
+            exercise: "отжимания".into(),
+            sets: 1,
+            reps: 6,
+            duration_secs: None,
+            pulse_before: None,
+            pulse_after: None,
+            notes: None,
+            user_id: None,
+        };
+        let id = db.add_training_cli(&training).unwrap();
+
+        let links = link_pulses(&db.get_trainings().unwrap(), &sessions);
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            (links[0].training_id, links[0].session_id.as_str(), links[0].pulse_before, links[0].pulse_after),
+            (id, "a1", 98, 100)
+        );
+        assert_eq!(db.fill_training_pulse(id, 98, 100).unwrap(), Some((98, 100)));
+        let stored = db.get_trainings().unwrap().into_iter().find(|t| t.id == Some(id)).unwrap();
+        assert_eq!((stored.pulse_before, stored.pulse_after), (Some(98), Some(100)));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
