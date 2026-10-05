@@ -84,6 +84,13 @@ enum Commands {
         exercise: Option<String>,
     },
 
+    /// Diary of imported watch workouts (from `intervals sync`)
+    Activities {
+        /// Number of activities to show
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
     /// Create or migrate the database schema (no training records are added)
     Migrate,
 
@@ -144,7 +151,7 @@ async fn main() -> Result<()> {
     }
     let is_tui = matches!(cli.command, Some(Commands::Tui) | None);
     if cli.json && (is_tui || matches!(cli.command, Some(Commands::Bot { .. }) | Some(Commands::Migrate))) {
-        bail!("--json is supported only for list, stats, log and intervals sync");
+        bail!("--json is supported only for list, stats, activities, log and intervals sync");
     }
 
     // migrate updates an existing database only: a typo in the path must not yield a new empty one
@@ -168,6 +175,8 @@ async fn main() -> Result<()> {
         let may_create = match &cli.command {
             Some(Commands::Log { create, .. }) => *create,
             Some(Commands::Intervals { action: IntervalsAction::Sync { create, .. } }) => *create,
+            // `migrate` is the explicit command for updating an existing database
+            Some(Commands::Migrate) => true,
             _ => false,
         };
         if !may_create && !Path::new(&cli.db).exists() {
@@ -176,7 +185,18 @@ async fn main() -> Result<()> {
                 cli.db
             );
         }
-        Database::open(&cli.db)?
+        if matches!(cli.command, Some(Commands::Migrate)) {
+            // migrate never creates the file: existing-only open + explicit init
+            Database::open_for_migrate(&cli.db)?
+        } else if may_create {
+            // `--create` initializes only a missing or empty file; an existing
+            // database — current, outdated or foreign — is never migrated here
+            Database::open_create(&cli.db)?
+        } else {
+            // an existing file must already be a majowuji database: an empty or
+            // foreign SQLite file is not silently initialized (contract: --create)
+            Database::open_existing(&cli.db)?
+        }
     } else {
         if !Path::new(&cli.db).exists() {
             bail!("database not found: {}", cli.db);
@@ -237,6 +257,29 @@ async fn main() -> Result<()> {
             }
         }
 
+        Some(Commands::Activities { limit }) => {
+            let activities = db.get_watch_activities(limit)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&activities)?);
+                return Ok(());
+            }
+            println!("Watch activities:");
+            println!("{:-<60}", "");
+            for a in activities {
+                println!(
+                    "{} | {} | {:16} | {:>5} s | pulse {}-{} | {:>4} kcal | {}",
+                    a.id,
+                    a.start.format("%Y-%m-%d %H:%M"),
+                    a.activity_type.as_deref().or(a.name.as_deref()).unwrap_or("-"),
+                    a.elapsed_secs,
+                    a.avg_hr.map_or("-".to_string(), |v| v.to_string()),
+                    a.max_hr.map_or("-".to_string(), |v| v.to_string()),
+                    a.calories.map_or("-".to_string(), |v| v.to_string()),
+                    a.source.as_deref().unwrap_or("-"),
+                );
+            }
+        }
+
         Some(Commands::Stats { exercise }) => {
             let trainings = db.get_trainings()?;
             let total = trainings.len();
@@ -291,7 +334,15 @@ async fn main() -> Result<()> {
             for s in &sessions {
                 db.upsert_watch_session(s)?;
             }
-            let links = intervals::link_pulses(&db.get_trainings()?, &sessions);
+            // Only CLI-created records (user_id NULL): bot rows belong to their
+            // users — a training of another user inside the watch window must
+            // never receive the owner's watch pulse (AGENTS.md "Known limitation")
+            let cli_trainings: Vec<_> = db
+                .get_trainings()?
+                .into_iter()
+                .filter(|t| t.user_id.is_none())
+                .collect();
+            let links = intervals::link_pulses(&cli_trainings, &sessions);
             let mut filled = Vec::new();
             for l in links {
                 // the report shows what is actually stored, kept real readings included
@@ -311,17 +362,23 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 println!("Watch sessions imported: {}", sessions.len());
+                let fmt = |v: Option<i32>| v.map_or_else(|| "-".to_string(), |b| b.to_string());
                 for l in &filled {
                     println!(
                         "training {} <- {}: pulse {} -> {}",
-                        l.training_id, l.session_id, l.pulse_before, l.pulse_after
+                        l.training_id,
+                        l.session_id,
+                        fmt(l.pulse_before),
+                        fmt(l.pulse_after)
                     );
                 }
             }
         }
 
         Some(Commands::Migrate) => {
-            // Database::open has already run the migrations; they ignore ALTER errors, so verify
+            // open_for_migrate has run init_schema; ALTER errors propagate,
+            // this verifies the file really ended up current (e.g. no virtual
+            // table tricks blocking an ALTER)
             if !db.schema_is_current() {
                 bail!("migration did not complete (read-only file?): {}", cli.db);
             }

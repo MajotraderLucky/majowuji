@@ -60,31 +60,75 @@ impl WatchSession {
     }
 }
 
-/// Heart rate assigned to a logged set
+/// Heart rate assigned to a logged set; a field is None when the workout has
+/// no measurable reading for it (e.g. the sensor locked on after the warmup
+/// window) — the other field is still filled independently
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PulseLink {
     pub training_id: i64,
     pub session_id: String,
-    pub pulse_before: i32,
-    pub pulse_after: i32,
+    pub pulse_before: Option<i32>,
+    pub pulse_after: Option<i32>,
 }
 
 /// Match logged sets to watch workouts by time.
 ///
-/// A set belongs to a workout when it was logged between the workout start and
-/// its end plus `GRACE_SECS`. Sets are taken in time order: a set starts where the
-/// previous one in the same workout was logged (or at the workout start).
-/// `pulse_before` is the heart rate at that point, `pulse_after` the peak up to the
-/// moment the set was logged. Real readings already stored are kept (the database
-/// fills each missing field separately); every set still marks where the next starts.
+/// A set belongs to the closest workout whose window covers it: the workout
+/// containing it beats one whose `GRACE_SECS` tail merely reaches it, and a tie
+/// (two workouts overlapping the set) goes to the later start. The choice is
+/// made for every set before any pulse is computed, so the API reply order can
+/// never bind another workout's readings to it. A workout with no HR readings
+/// still claims its sets — the set then gets no pulse at all rather than the
+// grace-tail readings of an earlier workout. Sets are taken in time order: a
+/// set starts where the previous one in the same workout was logged (or at the
+/// workout start). `pulse_before` is the heart rate at that point, `pulse_after`
+/// the peak up to the moment the set was logged; each is computed independently,
+/// so an unavailable one (sensor locked on late) never discards the measured
+/// other. Real readings already stored
+/// are kept (the database fills each missing field separately); every set still
+/// marks where the next starts.
 pub fn link_pulses(trainings: &[Training], sessions: &[WatchSession]) -> Vec<PulseLink> {
+    use std::collections::HashMap;
+
+    let mut assigned: HashMap<&str, Vec<&Training>> = HashMap::new();
+    for t in trainings {
+        if t.id.is_none() {
+            continue;
+        }
+        // every session competes, HR-less ones included: a set inside a
+        // session without readings must stay unfilled, not inherit the
+        // grace-tail pulse of another workout
+        let mut best: Option<(i64, DateTime<Utc>, &WatchSession)> = None;
+        for s in sessions.iter() {
+            let window_end = s.end() + chrono::Duration::seconds(GRACE_SECS);
+            if t.date < s.start || t.date > window_end {
+                continue;
+            }
+            let end = s.end();
+            // milliseconds, not seconds: a session that ended half a second
+            // before the set must not truncate into a tie with the session
+            // containing it — the tie would hand the set to the later start
+            let dist = if t.date <= end { 0 } else { (t.date - end).num_milliseconds().max(1) };
+            let better = match best {
+                None => true,
+                Some((best_dist, best_start, _)) => {
+                    dist < best_dist || (dist == best_dist && s.start > best_start)
+                }
+            };
+            if better {
+                best = Some((dist, s.start, s));
+            }
+        }
+        if let Some((_, _, s)) = best {
+            assigned.entry(s.id.as_str()).or_default().push(t);
+        }
+    }
+
     let mut links = Vec::new();
     for session in sessions.iter().filter(|s| !s.hr.is_empty()) {
-        let window_end = session.end() + chrono::Duration::seconds(GRACE_SECS);
-        let mut sets: Vec<&Training> = trainings
-            .iter()
-            .filter(|t| t.id.is_some() && t.date >= session.start && t.date <= window_end)
-            .collect();
+        let Some(sets) = assigned.get_mut(session.id.as_str()) else {
+            continue;
+        };
         sets.sort_by_key(|t| t.date);
 
         let last_sample = session.hr.last().map(|(t, _)| *t).unwrap_or(0);
@@ -93,9 +137,9 @@ pub fn link_pulses(trainings: &[Training], sessions: &[WatchSession]) -> Vec<Pul
             let logged_at = (set.date - session.start).num_seconds().min(last_sample);
             let unfilled = !has_pulse(set.pulse_before) || !has_pulse(set.pulse_after);
             if unfilled {
-                if let (Some(before), Some(after)) =
-                    (session.hr_at(set_start), session.hr_max(set_start, logged_at))
-                {
+                let before = session.hr_at(set_start);
+                let after = session.hr_max(set_start, logged_at);
+                if before.is_some() || after.is_some() {
                     links.push(PulseLink {
                         training_id: set.id.unwrap(),
                         session_id: session.id.clone(),
@@ -136,6 +180,21 @@ struct ApiStream {
     data: Vec<Option<f64>>,
 }
 
+/// Providers whose uploads are watch recordings. Anything else in the activities
+/// window (manual entries, imports from other trackers — they can carry heart
+/// rate) must not become a watch session: it would link a wrong pulse to a logged
+/// set, and filled fields are never overwritten by the next sync. Exact
+/// case-insensitive equality: a prefix match would also admit independent
+/// providers like "ZEPPELIN". Value observed in the owner's data: "ZEPP"
+/// (production DB, 01-02.10.2026).
+const WATCH_SOURCES: &[&str] = &["zepp"];
+
+fn is_watch_source(source: &Option<String>) -> bool {
+    source
+        .as_deref()
+        .is_some_and(|s| WATCH_SOURCES.iter().any(|w| s.eq_ignore_ascii_case(w)))
+}
+
 /// Intervals.icu REST client (API key auth)
 pub struct Client {
     http: reqwest::Client,
@@ -152,8 +211,16 @@ impl Client {
         if athlete.trim().is_empty() {
             bail!("Intervals.icu athlete id is empty");
         }
+        // Override for integration tests and diagnostics: point the client at a
+        // mock server instead of the production API. Disabled in release builds:
+        // a stray .env value must not be able to redirect the real API key.
+        #[cfg(debug_assertions)]
+        let base = std::env::var("MAJOWUJI_INTERVALS_API_BASE")
+            .unwrap_or_else(|_| API_BASE.to_string());
+        #[cfg(not(debug_assertions))]
+        let base = API_BASE.to_string();
         let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-        Ok(Self { http, base: API_BASE.to_string(), api_key, athlete })
+        Ok(Self { http, base, api_key, athlete })
     }
 
     /// Test-only: the same client pointed at a mock server
@@ -189,6 +256,9 @@ impl Client {
 
         let mut sessions = Vec::new();
         for a in activities {
+            if !is_watch_source(&a.source) {
+                continue;
+            }
             let Some(start) = a.start_date else { continue };
             let streams: Vec<ApiStream> = self
                 .get(&format!("/activity/{}/streams?types=time,heartrate", a.id))
@@ -285,7 +355,12 @@ mod tests {
         let links = link_pulses(&[set(14, t0() + secs(100))], &[s]);
         assert_eq!(
             links,
-            vec![PulseLink { training_id: 14, session_id: "i1".into(), pulse_before: 76, pulse_after: 93 }]
+            vec![PulseLink {
+                training_id: 14,
+                session_id: "i1".into(),
+                pulse_before: Some(76),
+                pulse_after: Some(93)
+            }]
         );
     }
 
@@ -294,8 +369,8 @@ mod tests {
         let s = session(t0(), &[(0, 70), (50, 120), (100, 90), (150, 130), (200, 95)]);
         let links = link_pulses(&[set(2, t0() + secs(160)), set(1, t0() + secs(60))], &[s]);
         assert_eq!(links.len(), 2);
-        assert_eq!((links[0].training_id, links[0].pulse_before, links[0].pulse_after), (1, 70, 120));
-        assert_eq!((links[1].training_id, links[1].pulse_before, links[1].pulse_after), (2, 120, 130));
+        assert_eq!((links[0].training_id, links[0].pulse_before, links[0].pulse_after), (1, Some(70), Some(120)));
+        assert_eq!((links[1].training_id, links[1].pulse_before, links[1].pulse_after), (2, Some(120), Some(130)));
     }
 
     #[test]
@@ -314,7 +389,7 @@ mod tests {
         first.pulse_after = Some(118);
         let links = link_pulses(&[first, set(2, t0() + secs(150))], &[s]);
         assert_eq!(links.len(), 1);
-        assert_eq!((links[0].training_id, links[0].pulse_before, links[0].pulse_after), (2, 120, 130));
+        assert_eq!((links[0].training_id, links[0].pulse_before, links[0].pulse_after), (2, Some(120), Some(130)));
     }
 
     #[test]
@@ -325,15 +400,21 @@ mod tests {
 
     #[test]
     fn warmup_first_sample_serves_as_before() {
-        // set 1 is logged at 10 s, before the sensor locks on (19 s): it links
-        // nothing, but moves the boundary, so set 2 gets its "before" from the
-        // warmup fallback — the first sample, 9 s into the future
+        // set 1 is logged at 10 s, before the sensor locks on (19 s): its peak is
+        // not measurable yet, but the warmup fallback gives the "before" and it is
+        // filled alone (r9) — it still moves the boundary, so set 2 gets its
+        // "before" from the warmup fallback, the first sample 9 s into the future
         let s = session(t0(), &[(19, 98), (32, 100), (50, 120)]);
         let links = link_pulses(&[set(1, t0() + secs(10)), set(2, t0() + secs(50))], &[s]);
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].training_id, 2);
-        assert_eq!(links[0].pulse_before, 98);
-        assert_eq!(links[0].pulse_after, 120);
+        assert_eq!(links.len(), 2);
+        assert_eq!(
+            (links[0].training_id, links[0].pulse_before, links[0].pulse_after),
+            (1, Some(98), None)
+        );
+        assert_eq!(
+            (links[1].training_id, links[1].pulse_before, links[1].pulse_after),
+            (2, Some(98), Some(120))
+        );
     }
 
     #[test]
@@ -372,8 +453,26 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen_requests = Arc::clone(&requests);
         let handle = std::thread::spawn(move || {
+            // bounded wait: a regression or a bad fixture that makes the client
+            // skip an expected request must turn the test red on its assertions,
+            // not hang the harness forever in accept()
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            listener.set_nonblocking(true).unwrap();
             for resp in responses {
-                let (mut stream, _) = listener.accept().unwrap();
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(pair) => break pair,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if std::time::Instant::now() >= deadline {
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(e) => panic!("mock accept failed: {e}"),
+                    }
+                };
+                // accepted sockets inherit the listener's nonblocking mode
+                stream.set_nonblocking(false).unwrap();
                 let mut seen = Vec::new();
                 let mut buf = [0u8; 8192];
                 loop {
@@ -429,6 +528,9 @@ mod tests {
         assert_eq!(s.hr, vec![(19, 98), (40, 100), (70, 119)]);
 
         let dir = std::env::temp_dir().join(format!("majowuji-mock-{}", std::process::id()));
+        // a previous run may have crashed before cleanup and a reused PID
+        // would inherit its it.db (a stale set breaks the link count below)
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db = crate::db::Database::open(dir.join("it.db").to_str().unwrap()).unwrap();
         let training = Training {
@@ -449,13 +551,151 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(
             (links[0].training_id, links[0].session_id.as_str(), links[0].pulse_before, links[0].pulse_after),
-            (id, "a1", 98, 100)
+            (id, "a1", Some(98), Some(100))
         );
-        assert_eq!(db.fill_training_pulse(id, 98, 100).unwrap(), Some((98, 100)));
+        assert_eq!(
+            db.fill_training_pulse(id, Some(98), Some(100)).unwrap(),
+            Some((Some(98), Some(100)))
+        );
         let stored = db.get_trainings().unwrap().into_iter().find(|t| t.id == Some(id)).unwrap();
         assert_eq!((stored.pulse_before, stored.pulse_after), (Some(98), Some(100)));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn link_pulses_assigns_overlapping_set_to_the_containing_session() {
+        // Session A ends at t=60 and its grace window still reaches a set logged
+        // at t=150; session B spans t=120..420. The set must go to B even though
+        // A is returned first: the old per-session loop bound A's readings and
+        // the first fill made them permanent (r7 finding, P1)
+        let base = Utc.with_ymd_and_hms(2026, 10, 1, 18, 0, 0).unwrap();
+        let session_a = WatchSession {
+            id: "a".into(),
+            start: base,
+            activity_type: None,
+            name: None,
+            elapsed_secs: 60,
+            avg_hr: None,
+            max_hr: None,
+            calories: None,
+            source: Some("ZEPP".into()),
+            hr: vec![(10, 90), (50, 95)],
+        };
+        let session_b = WatchSession {
+            id: "b".into(),
+            start: base + chrono::Duration::seconds(120),
+            activity_type: None,
+            name: None,
+            elapsed_secs: 300,
+            avg_hr: None,
+            max_hr: None,
+            calories: None,
+            source: Some("ZEPP".into()),
+            hr: vec![(10, 88), (30, 120)],
+        };
+        let training = Training {
+            id: Some(1),
+            date: base + chrono::Duration::seconds(150),
+            exercise: "jab".into(),
+            sets: 1,
+            reps: 6,
+            duration_secs: None,
+            pulse_before: None,
+            pulse_after: None,
+            notes: None,
+            user_id: None,
+        };
+        let links = link_pulses(&[training], &[session_a, session_b]);
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            (links[0].training_id, links[0].session_id.as_str(), links[0].pulse_before, links[0].pulse_after),
+            (1, "b", Some(88), Some(120))
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_skip_non_watch_sources() {
+        // A manual/other-tracker activity with heart rate must not become a watch
+        // session: it would link a wrong pulse and block the real one (filled
+        // fields are never overwritten)
+        let activities = r#"[{
+            "id": "a1", "start_date": "2026-10-01T18:00:00Z", "type": "WeightTraining",
+            "elapsed_time": 600, "average_heartrate": 110.0, "max_heartrate": 130.0,
+            "calories": 50.0, "source": "STRAVA" }]"#;
+        let (base, server, requests) = spawn_mock(vec![http_json(activities)]);
+        let client = Client::with_base(base, "key".into(), "i1".into()).unwrap();
+        let oldest = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        let newest = chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let sessions = client.sessions(oldest, newest).await.unwrap();
+        server.join().unwrap();
+        assert!(sessions.is_empty(), "non-watch source must be filtered out");
+        // filtered before the streams request: exactly one HTTP call happened
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sessions_skip_close_prefix_sources() {
+        // prefix lookalike must be rejected too (r2 finding): "ZEPPELIN" is not Zepp
+        let activities = r#"[{
+            "id": "a1", "start_date": "2026-10-01T18:00:00Z", "type": "WeightTraining",
+            "elapsed_time": 600, "average_heartrate": 110.0, "max_heartrate": 130.0,
+            "calories": 50.0, "source": "ZEPPELIN" }]"#;
+        let (base, server, requests) = spawn_mock(vec![http_json(activities)]);
+        let client = Client::with_base(base, "key".into(), "i1".into()).unwrap();
+        let oldest = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+        let newest = chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap();
+        let sessions = client.sessions(oldest, newest).await.unwrap();
+        server.join().unwrap();
+        assert!(sessions.is_empty(), "prefix lookalike source must be filtered out");
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn link_pulses_prefers_hr_less_session_over_foreign_grace_tail() {
+        // Session B contains the set but has no HR readings; session A's grace
+        // tail still reaches it. The set must stay unfilled rather than get
+        // A's readings — the old pre-filter made A win because B was invisible
+        // to the closest-session choice (r8 finding, P1)
+        let base = Utc.with_ymd_and_hms(2026, 10, 1, 18, 0, 0).unwrap();
+        let session_a = WatchSession {
+            id: "a".into(),
+            start: base,
+            activity_type: None,
+            name: None,
+            elapsed_secs: 60,
+            avg_hr: None,
+            max_hr: None,
+            calories: None,
+            source: Some("ZEPP".into()),
+            hr: vec![(10, 90), (50, 95)],
+        };
+        let session_b = WatchSession {
+            id: "b".into(),
+            start: base + chrono::Duration::seconds(120),
+            activity_type: None,
+            name: None,
+            elapsed_secs: 300,
+            avg_hr: None,
+            max_hr: None,
+            calories: None,
+            source: Some("ZEPP".into()),
+            hr: vec![],
+        };
+        let training = Training {
+            id: Some(1),
+            date: base + chrono::Duration::seconds(150),
+            exercise: "jab".into(),
+            sets: 1,
+            reps: 6,
+            duration_secs: None,
+            pulse_before: None,
+            pulse_after: None,
+            notes: None,
+            user_id: None,
+        };
+        let links = link_pulses(&[training], &[session_a, session_b]);
+        assert!(links.is_empty(), "a set inside an HR-less session gets no pulse");
     }
 
     #[test]
@@ -466,7 +706,39 @@ mod tests {
         stale.pulse_after = Some(100);
         let links = link_pulses(&[stale], &[s]);
         assert_eq!(links.len(), 1);
-        assert_eq!((links[0].pulse_before, links[0].pulse_after), (98, 100));
+        assert_eq!((links[0].pulse_before, links[0].pulse_after), (Some(98), Some(100)));
+    }
+
+    #[test]
+    fn link_pulses_fills_after_when_before_unavailable() {
+        // r9 finding (P2): the first sample at 120 s is outside the 60 s warmup
+        // window, so "pulse before" at the workout start is unknown — the measured
+        // peak up to the set must still be reported, not dropped with the before
+        let s = session(t0(), &[(120, 98)]);
+        let links = link_pulses(&[set(1, t0() + secs(130))], &[s]);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].pulse_before, None);
+        assert_eq!(links[0].pulse_after, Some(98));
+    }
+
+    #[test]
+    fn link_pulses_prefers_containing_session_over_subsecond_grace_tail() {
+        // r9 finding (P2): B ends half a second before the logged set —
+        // truncating the gap to whole seconds ties it with the containing A,
+        // and the tie would hand the set to the later start B
+        let mut a = session(t0(), &[(740, 88)]);
+        a.id = "a".into();
+        a.elapsed_secs = 800;
+        let mut b = session(t0() + secs(700), &[(10, 150)]);
+        b.id = "b".into();
+        b.elapsed_secs = 50; // ends at t0+750; the set is logged at t0+750.5
+        let mut t = set(1, t0() + secs(750) + chrono::Duration::milliseconds(500));
+        t.pulse_before = None;
+        t.pulse_after = None;
+        let links = link_pulses(&[t], &[a, b]);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].session_id, "a");
+        assert_eq!(links[0].pulse_after, Some(88));
     }
 
     #[test]

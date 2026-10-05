@@ -31,6 +31,21 @@ pub struct Training {
     pub user_id: Option<i64>,        // Owner of this training record
 }
 
+/// Diary entry of an imported watch workout (summary — the HR stream stays
+/// in the database and is not part of the diary)
+#[derive(Debug, Serialize)]
+pub struct WatchActivity {
+    pub id: String,
+    pub start: DateTime<Utc>,
+    pub activity_type: Option<String>,
+    pub name: Option<String>,
+    pub elapsed_secs: i64,
+    pub avg_hr: Option<i32>,
+    pub max_hr: Option<i32>,
+    pub calories: Option<i32>,
+    pub source: Option<String>,
+}
+
 /// Parse date string from database (supports RFC3339 and legacy "YYYY-MM-DD HH:MM:SS" format)
 pub(crate) fn parse_date(date_str: &str) -> DateTime<Utc> {
     // Try RFC3339 first (new format with timezone)
@@ -53,12 +68,99 @@ pub struct Database {
 }
 
 impl Database {
-    /// Open or create database
+    /// Open or create the database, migrating the schema in place. Legacy
+    /// semantics for the interactive bot and in-memory test fixtures; the CLI
+    /// must not use this path — see `open_create` and `open_for_migrate`
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
+    }
+
+    /// The explicit `--create` path: initialize ONLY a missing or 0-byte file.
+    /// Anything already on disk keeps its bytes — a current database is written
+    /// as-is, an outdated or foreign one (even a non-empty file without tables,
+    /// e.g. only a VIEW) is an error, so a write command never migrates a schema
+    /// behind the owner's back
+    pub fn open_create(path: &str) -> Result<Self> {
+        let empty = std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true);
+        if !empty {
+            return Self::open_existing(path);
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let db = Self { conn };
+        // check and write under one immediate transaction: a concurrent creator
+        // must not slip a foreign schema between the sqlite_master check and init
+        db.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let user_objects: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+            [],
+            |row| row.get(0),
+        )?;
+        // the outer size check raced: the file may have grown before we took
+        // the write lock (a concurrent --create or a foreign writer). Anything
+        // non-empty is an existing database now — written as-is if current,
+        // refused with the precise error otherwise — never init over it
+        let grew = std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false);
+        if user_objects > 0 || grew {
+            db.conn.execute_batch("ROLLBACK")?;
+            return Self::open_existing(path);
+        }
+        db.init_schema()?;
+        db.conn.execute_batch("COMMIT")?;
+        Ok(db)
+    }
+
+    /// Open an existing database for writing: no file creation (READ_WRITE without
+    /// CREATE — the SQLite open itself refuses a missing path), no silent schema
+    /// init. An empty or foreign SQLite file is an error — initialization is only
+    /// allowed through `open` behind the explicit `--create` gate
+    pub fn open_existing(path: &str) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Self::require_trainings(&conn, path)?;
+        let db = Self { conn };
+        if !db.schema_is_current() {
+            bail!("database schema is outdated, run `majowuji migrate` first: {}", path);
+        }
+        Ok(db)
+    }
+
+    /// Open an existing majowuji database for writing and migrate it in place
+    /// (the explicit `migrate` command): the no-CREATE flag guarantees the file
+    /// itself is not created or replaced
+    pub fn open_for_migrate(path: &str) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Self::require_trainings(&conn, path)?;
+        let db = Self { conn };
+        db.init_schema()?;
+        Ok(db)
+    }
+
+    fn require_trainings(conn: &Connection, path: &str) -> Result<()> {
+        let has_trainings: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trainings')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_trainings {
+            bail!(
+                "not a majowuji database (no trainings table): {} (add --create to initialize)",
+                path
+            );
+        }
+        Ok(())
     }
 
     /// Open an existing database read-only: no file creation, no schema init or migration
@@ -85,8 +187,12 @@ impl Database {
     /// True when the schema has every table and column the current code reads
     pub fn schema_is_current(&self) -> bool {
         self.conn
-            .prepare("SELECT duration_secs, pulse_before, pulse_after, user_id FROM trainings LIMIT 0")
+            .prepare("SELECT id, date, exercise, sets, reps, duration_secs, pulse_before, pulse_after, notes, user_id FROM trainings LIMIT 0")
             .is_ok()
+            && self
+                .conn
+                .prepare("SELECT id, chat_id, username, first_name, created_at, is_owner FROM users LIMIT 0")
+                .is_ok()
             && self.has_watch_sessions()
     }
 
@@ -142,19 +248,32 @@ impl Database {
             );
         }
 
-        // Migration: add pulse columns if missing
-        let has_pulse: bool = self.conn
-            .prepare("SELECT pulse_before FROM trainings LIMIT 1")
+        // Migration: add pulse columns independently — a file interrupted between
+        // the two ALTERs of an older migration has only pulse_before and must
+        // still gain pulse_after
+        for column in ["pulse_before", "pulse_after"] {
+            let has_column: bool = self.conn
+                .prepare(&format!("SELECT {column} FROM trainings LIMIT 1"))
+                .is_ok();
+            if !has_column {
+                self.conn.execute(
+                    &format!("ALTER TABLE trainings ADD COLUMN {column} INTEGER"),
+                    [],
+                )?;
+            }
+        }
+
+        // Migration: add notes column if missing (schemas older than the notes
+        // feature) — schema_is_current requires it, so migrate must be able to
+        // add it, otherwise the "run migrate" advice is a dead end
+        let has_notes: bool = self.conn
+            .prepare("SELECT notes FROM trainings LIMIT 1")
             .is_ok();
-        if !has_pulse {
-            let _ = self.conn.execute(
-                "ALTER TABLE trainings ADD COLUMN pulse_before INTEGER",
+        if !has_notes {
+            self.conn.execute(
+                "ALTER TABLE trainings ADD COLUMN notes TEXT",
                 [],
-            );
-            let _ = self.conn.execute(
-                "ALTER TABLE trainings ADD COLUMN pulse_after INTEGER",
-                [],
-            );
+            )?;
         }
 
         // Watch workouts imported from Intervals.icu (hr_json: [[offset_secs, bpm], ...])
@@ -213,23 +332,63 @@ impl Database {
         Ok(())
     }
 
-    /// Fill missing heart rate of a logged set, field by field; never overwrites real
-    /// readings (NULL and 0 both mean no reading). Returns the values actually stored
-    /// by this update — kept real readings included — or None when there was nothing to fill.
+    /// Diary of imported watch workouts, newest first
+    pub fn get_watch_activities(&self, limit: usize) -> Result<Vec<WatchActivity>> {
+        // a plain `limit as i64` cast wraps values beyond i64::MAX to negative,
+        // and SQLite reads a negative LIMIT as "no limit" — clamp so "at most N"
+        // holds by construction, not by the wrap plus LIMIT semantics
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, start, activity_type, name, elapsed_secs, avg_hr, max_hr, calories, source
+             FROM watch_sessions ORDER BY start DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |row| {
+            let start: String = row.get(1)?;
+            let start = DateTime::parse_from_rfc3339(&start)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
+                .with_timezone(&Utc);
+            Ok(WatchActivity {
+                id: row.get(0)?,
+                start,
+                activity_type: row.get(2)?,
+                name: row.get(3)?,
+                elapsed_secs: row.get(4)?,
+                avg_hr: row.get(5)?,
+                max_hr: row.get(6)?,
+                calories: row.get(7)?,
+                source: row.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Fill missing heart rate of a logged set, field by field; a None argument
+    /// leaves its column alone (no measurable reading for it). Never overwrites
+    /// real readings (NULL and 0 both mean no reading). Returns the values now
+    /// stored by this update — kept real readings included, None where still
+    /// empty — or None when there was nothing to fill.
     pub fn fill_training_pulse(
         &self,
         training_id: i64,
-        before: i32,
-        after: i32,
-    ) -> Result<Option<(i32, i32)>> {
+        before: Option<i32>,
+        after: Option<i32>,
+    ) -> Result<Option<(Option<i32>, Option<i32>)>> {
         match self.conn.query_row(
             "UPDATE trainings SET
-                 pulse_before = CASE WHEN COALESCE(pulse_before, 0) <= 0 THEN ?1 ELSE pulse_before END,
-                 pulse_after = CASE WHEN COALESCE(pulse_after, 0) <= 0 THEN ?2 ELSE pulse_after END
-             WHERE id = ?3 AND (COALESCE(pulse_before, 0) <= 0 OR COALESCE(pulse_after, 0) <= 0)
+                 pulse_before = CASE WHEN ?1 IS NOT NULL AND COALESCE(pulse_before, 0) <= 0 THEN ?1 ELSE pulse_before END,
+                 pulse_after = CASE WHEN ?2 IS NOT NULL AND COALESCE(pulse_after, 0) <= 0 THEN ?2 ELSE pulse_after END
+             WHERE id = ?3 AND user_id IS NULL
+               AND ((?1 IS NOT NULL AND COALESCE(pulse_before, 0) <= 0)
+                    OR (?2 IS NOT NULL AND COALESCE(pulse_after, 0) <= 0))
              RETURNING pulse_before, pulse_after",
             params![before, after, training_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get::<_, Option<i32>>(0)?, row.get::<_, Option<i32>>(1)?)),
         ) {
             Ok(pair) => Ok(Some(pair)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -440,6 +599,24 @@ mod tests {
 
     fn create_test_db() -> Database {
         Database::open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn open_existing_and_migrate_do_not_create_file() {
+        // the no-CREATE open flags are the guarantee: without them a missing path
+        // yields a fresh empty file on disk even though the call errors
+        let dir = std::env::temp_dir().join(format!(
+            "majowuji-open-mut-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("missing.db").to_string_lossy().into_owned();
+        assert!(Database::open_existing(&path).is_err());
+        assert!(!dir.join("missing.db").exists(), "open_existing must not create the file");
+        assert!(Database::open_for_migrate(&path).is_err());
+        assert!(!dir.join("missing.db").exists(), "open_for_migrate must not create the file");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn create_test_training(exercise: &str, reps: i32) -> Training {
@@ -723,10 +900,72 @@ mod tests {
         };
         let id = db.add_training_cli(&t).unwrap();
         // stored becomes (98, 100): the kept real reading is reported, not the computed 111
-        assert_eq!(db.fill_training_pulse(id, 98, 111).unwrap(), Some((98, 100)));
+        assert_eq!(
+            db.fill_training_pulse(id, Some(98), Some(111)).unwrap(),
+            Some((Some(98), Some(100)))
+        );
         let got = db.get_trainings().unwrap().into_iter().find(|t| t.id == Some(id)).unwrap();
         assert_eq!((got.pulse_before, got.pulse_after), (Some(98), Some(100)));
         // both real now: nothing to fill
-        assert_eq!(db.fill_training_pulse(id, 50, 50).unwrap(), None);
+        assert_eq!(db.fill_training_pulse(id, Some(50), Some(50)).unwrap(), None);
+    }
+
+    #[test]
+    fn fill_training_pulse_fills_each_field_independently() {
+        // r9 finding (P2): before unavailable (sensor locked on late), after
+        // measured — the measured field is stored, the unavailable one stays
+        // empty and is filled by a later sync on its own
+        let db = create_test_db();
+        let t = Training {
+            id: None,
+            date: Utc::now(),
+            exercise: "пресс".into(),
+            sets: 1,
+            reps: 10,
+            duration_secs: None,
+            pulse_before: None,
+            pulse_after: None,
+            notes: None,
+            user_id: None,
+        };
+        let id = db.add_training_cli(&t).unwrap();
+        assert_eq!(
+            db.fill_training_pulse(id, None, Some(98)).unwrap(),
+            Some((None, Some(98)))
+        );
+        let got = db.get_trainings().unwrap().into_iter().find(|t| t.id == Some(id)).unwrap();
+        assert_eq!((got.pulse_before, got.pulse_after), (None, Some(98)));
+        // the previously unavailable field arrives with the next sync: only it is filled
+        assert_eq!(
+            db.fill_training_pulse(id, Some(88), None).unwrap(),
+            Some((Some(88), Some(98)))
+        );
+    }
+
+    #[test]
+    fn fill_training_pulse_never_touches_bot_rows() {
+        // r8 finding (P2): the CLI filters user_id IS NULL before link_pulses,
+        // but the bot may claim the row between that filter and the fill — the
+        // UPDATE itself must repeat the predicate
+        let db = create_test_db();
+        let owner = db.get_or_create_user(12345, None, None).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO trainings (date, exercise, sets, reps, user_id)
+                 VALUES ('2026-10-01T18:00:00+00:00', 'jab', 1, 6, ?1)",
+                [owner.id],
+            )
+            .unwrap();
+        let id = db.conn.last_insert_rowid();
+        assert_eq!(db.fill_training_pulse(id, Some(90), Some(120)).unwrap(), None);
+        let (pb, pa): (Option<i32>, Option<i32>) = db
+            .conn
+            .query_row(
+                "SELECT pulse_before, pulse_after FROM trainings WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((pb, pa), (None, None), "bot row must stay unfilled");
     }
 }
